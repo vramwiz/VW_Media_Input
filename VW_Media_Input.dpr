@@ -45,11 +45,11 @@ begin
 end;
 
 //------------------------------------------------------------------------------
-// 音声（なし）
+// 音声
 //------------------------------------------------------------------------------
 function func_read_audio(ih: INPUT_HANDLE; start, length: Integer; buf: Pointer): Integer; cdecl;
 begin
-  Result := 0;
+  Result := PluginInputReadAudio(ih,start,length,buf);
 end;
 
 //------------------------------------------------------------------------------
@@ -65,7 +65,7 @@ end;
 //------------------------------------------------------------------------------
 var
   Plugin: TInputPluginTable = (
-    flag: INPUT_PLUGIN_FLAG_VIDEO;
+    flag: INPUT_PLUGIN_FLAG_VIDEO or INPUT_PLUGIN_FLAG_AUDIO;
     name: '動画入力';
     filefilter: 'Video files (*.mp4;*.mov;*.mkv;*.avi)'#0'*.mp4;*.mov;*.mkv;*.avi'#0;
     //filefilter: nil;

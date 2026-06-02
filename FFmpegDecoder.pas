@@ -114,12 +114,16 @@ type
     function DecodeNextFrameToBitmap(Bitmap: TBitmap; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
     function DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    // 開いているファイルの音声をPCM16 stereo 48kHzへ全デコードする
+    function DecodeAllAudioPcm16Stereo48k(out Pcm: TBytes; out SampleCount: Integer; out ErrorMessage: string): Boolean;
     // デバッグ用の音声再生を開始する
     function StartAudioPlayback(out ErrorMessage: string): Boolean;
     // デバッグ用の音声再生を停止する
     procedure StopAudioPlayback;
     // 一時デコーダで動画情報だけを読む
     class function ReadVideoInfo(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean; static;
+    // 一時デコーダで音声をPCM16 stereo 48kHzへ全デコードする
+    class function DecodeFileAudioPcm16Stereo48k(const FileName: string; out Pcm: TBytes; out SampleCount: Integer; out ErrorMessage: string): Boolean; static;
     // 一時デコーダで指定位置のフレームだけを読む
     class function DecodeFrameToBitmap(const FileName: string; PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean; overload; static;
     property Info: TVideoInfo read FInfo;
@@ -1561,6 +1565,103 @@ begin
     UpdateAudioLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
   end;
 end;
+
+// 開いているファイルの音声をPCM16 stereo 48kHzへ全デコードする
+function TFFmpegDecoder.DecodeAllAudioPcm16Stereo48k(out Pcm: TBytes; out SampleCount: Integer; out ErrorMessage: string): Boolean;
+var
+  FormatContext: PAVFormatContext;
+  AudioCodecContext: PAVCodecContext;
+  Packet: PAVPacket;
+  AudioFrame: PAVFrame;
+  Ret: Integer;
+  OutData: array[0..0] of PByte;
+  OutSamples: Integer;
+  ConvertedSamples: Integer;
+  ConvertedBytes: Integer;
+  OldBytes: Integer;
+
+  procedure AppendDecodedAudioFrame;
+  begin
+    if FInfo.Audio.SampleRate > 0 then
+      OutSamples := Ceil(AudioFrame.nb_samples * AUDIO_OUTPUT_SAMPLE_RATE / FInfo.Audio.SampleRate) + 256
+    else
+      OutSamples := AudioFrame.nb_samples + 256;
+
+    OldBytes := Length(Pcm);
+    SetLength(Pcm, OldBytes + OutSamples * AUDIO_OUTPUT_CHANNELS * SizeOf(SmallInt));
+    OutData[0] := @Pcm[OldBytes];
+    ConvertedSamples := TFFmpegApi.swr_convert(PSwrContext(FSwrContext), @OutData[0], OutSamples,
+      @AudioFrame.data[0], AudioFrame.nb_samples);
+
+    if ConvertedSamples <= 0 then
+    begin
+      SetLength(Pcm, OldBytes);
+      Exit;
+    end;
+
+    ConvertedBytes := ConvertedSamples * AUDIO_OUTPUT_CHANNELS * SizeOf(SmallInt);
+    SetLength(Pcm, OldBytes + ConvertedBytes);
+    Inc(SampleCount, ConvertedSamples);
+  end;
+
+begin
+  Pcm := nil;
+  SampleCount := 0;
+  ErrorMessage := '';
+  Result := False;
+
+  FormatContext := PAVFormatContext(FFormatContext);
+  AudioCodecContext := PAVCodecContext(FAudioCodecContext);
+  Packet := PAVPacket(FPacket);
+  AudioFrame := PAVFrame(FAudioFrame);
+
+  if (not FInfo.Audio.Present) or (AudioCodecContext = nil) or (Packet = nil) or
+     (AudioFrame = nil) or (FSwrContext = nil) or (FormatContext = nil) then
+  begin
+    ErrorMessage := 'Audio decoder is not open. ' + FInfo.Audio.OpenError;
+    Exit;
+  end;
+
+  try
+    if Assigned(FCodecContext) then
+      TFFmpegApi.avcodec_flush_buffers(PAVCodecContext(FCodecContext));
+    TFFmpegApi.avcodec_flush_buffers(AudioCodecContext);
+
+    while TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0 do
+    begin
+      try
+        if Packet.stream_index <> FAudioStreamIndex then
+          Continue;
+
+        Ret := TFFmpegApi.avcodec_send_packet(AudioCodecContext, Packet);
+        if Ret < 0 then
+          Continue;
+
+        while TFFmpegApi.avcodec_receive_frame(AudioCodecContext, AudioFrame) = 0 do
+          AppendDecodedAudioFrame;
+      finally
+        TFFmpegApi.av_packet_unref(Packet);
+      end;
+    end;
+
+    Ret := TFFmpegApi.avcodec_send_packet(AudioCodecContext, nil);
+    if Ret >= 0 then
+      while TFFmpegApi.avcodec_receive_frame(AudioCodecContext, AudioFrame) = 0 do
+        AppendDecodedAudioFrame;
+
+    Result := SampleCount > 0;
+    if not Result then
+      ErrorMessage := 'Audio stream was found, but no samples were decoded.';
+  except
+    on E: Exception do
+    begin
+      Pcm := nil;
+      SampleCount := 0;
+      ErrorMessage := E.ClassName + ': ' + E.Message;
+    end;
+  end;
+end;
+
 // 一時デコーダで動画情報だけを読む
 class function TFFmpegDecoder.ReadVideoInfo(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
 var
@@ -1569,6 +1670,22 @@ begin
   Decoder := TFFmpegDecoder.Create;
   try
     Result := Decoder.Open(FileName, Info, ErrorMessage);
+  finally
+    Decoder.Free;
+  end;
+end;
+
+// 一時デコーダで音声をPCM16 stereo 48kHzへ全デコードする
+class function TFFmpegDecoder.DecodeFileAudioPcm16Stereo48k(const FileName: string; out Pcm: TBytes; out SampleCount: Integer; out ErrorMessage: string): Boolean;
+var
+  Decoder: TFFmpegDecoder;
+  Info: TVideoInfo;
+begin
+  Decoder := TFFmpegDecoder.Create;
+  try
+    Result := Decoder.Open(FileName, Info, ErrorMessage);
+    if Result then
+      Result := Decoder.DecodeAllAudioPcm16Stereo48k(Pcm, SampleCount, ErrorMessage);
   finally
     Decoder.Free;
   end;

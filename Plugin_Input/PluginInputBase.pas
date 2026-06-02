@@ -9,6 +9,7 @@ function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
 function PluginInputGetInfo(ih: INPUT_HANDLE; info: PInputInfo): BOOL;
 function PluginInputReadVideo(ih: INPUT_HANDLE; frame: Integer; buf: Pointer): Integer;
+function PluginInputReadAudio(ih: INPUT_HANDLE; start, sampleLength: Integer; buf: Pointer): Integer;
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 
 implementation
@@ -28,6 +29,9 @@ type
     Scale: Integer;
     FrameCount: Integer;
     Info: BITMAPINFOHEADER;
+    AudioFormat: WAVEFORMATEX;
+    AudioPcm: TBytes;
+    AudioSampleCount: Integer;
     LastDecodedFrame: Integer;
     CachedFrame: TBytes;
     LastError: string;
@@ -39,6 +43,8 @@ begin
     Exit;
 
   Ctx^.Decoder.Free;
+  Ctx^.AudioPcm := nil;
+  Ctx^.CachedFrame := nil;
   Dispose(Ctx);
 end;
 
@@ -82,6 +88,7 @@ var
   Ctx: PFileContext;
   VideoInfo: TVideoInfo;
   ErrorMessage: string;
+  AudioErrorMessage: string;
 begin
   Result := nil;
   New(Ctx);
@@ -111,6 +118,21 @@ begin
       Ctx^.Info.biBitCount := 32;
       Ctx^.Info.biCompression := BI_RGB;
       Ctx^.Info.biSizeImage := Ctx^.Width * Ctx^.Height * 4;
+
+      if VideoInfo.Audio.Present and (VideoInfo.Audio.OpenError = '') and
+         TFFmpegDecoder.DecodeFileAudioPcm16Stereo48k(Ctx^.FileName, Ctx^.AudioPcm,
+           Ctx^.AudioSampleCount, AudioErrorMessage) then
+      begin
+        Ctx^.AudioFormat.wFormatTag := 1;
+        Ctx^.AudioFormat.nChannels := 2;
+        Ctx^.AudioFormat.nSamplesPerSec := 48000;
+        Ctx^.AudioFormat.wBitsPerSample := 16;
+        Ctx^.AudioFormat.nBlockAlign := Ctx^.AudioFormat.nChannels * Ctx^.AudioFormat.wBitsPerSample div 8;
+        Ctx^.AudioFormat.nAvgBytesPerSec := Ctx^.AudioFormat.nSamplesPerSec * Ctx^.AudioFormat.nBlockAlign;
+        Ctx^.AudioFormat.cbSize := 0;
+      end
+      else
+        Ctx^.LastError := AudioErrorMessage;
 
       Result := Ctx;
       Ctx := nil;
@@ -145,11 +167,19 @@ begin
   Ctx := PFileContext(ih);
   FillChar(info^, SizeOf(TInputInfo), 0);
   info^.flag := INPUT_INFO_FLAG_VIDEO;
+  if (Ctx^.AudioSampleCount > 0) and (Length(Ctx^.AudioPcm) > 0) then
+    info^.flag := info^.flag or INPUT_INFO_FLAG_AUDIO;
   info^.rate := Ctx^.Rate;
   info^.scale := Ctx^.Scale;
   info^.n := Ctx^.FrameCount;
   info^.format := @Ctx^.Info;
   info^.format_size := SizeOf(BITMAPINFOHEADER);
+  if (info^.flag and INPUT_INFO_FLAG_AUDIO) <> 0 then
+  begin
+    info^.audio_n := Ctx^.AudioSampleCount;
+    info^.audio_format := @Ctx^.AudioFormat;
+    info^.audio_format_size := SizeOf(WAVEFORMATEX);
+  end;
   Result := True;
 end;
 
@@ -200,6 +230,44 @@ begin
   Move(buf^, Ctx^.CachedFrame[0], ImageSize);
   Ctx^.LastDecodedFrame := frame;
   Result := ImageSize;
+end;
+
+function PluginInputReadAudio(ih: INPUT_HANDLE; start, sampleLength: Integer; buf: Pointer): Integer;
+var
+  Ctx: PFileContext;
+  BlockAlign: Integer;
+  AvailableSamples: Integer;
+  SamplesToCopy: Integer;
+  SourceOffset: Integer;
+  BytesToCopy: Integer;
+begin
+  Result := 0;
+  if (ih = nil) or (buf = nil) or (sampleLength <= 0) then
+    Exit;
+
+  Ctx := PFileContext(ih);
+  if (Ctx^.AudioSampleCount <= 0) or (Length(Ctx^.AudioPcm) = 0) then
+    Exit;
+
+  if start < 0 then
+    start := 0;
+  if start >= Ctx^.AudioSampleCount then
+    Exit;
+
+  BlockAlign := Ctx^.AudioFormat.nBlockAlign;
+  if BlockAlign <= 0 then
+    Exit;
+
+  AvailableSamples := Ctx^.AudioSampleCount - start;
+  SamplesToCopy := Min(sampleLength, AvailableSamples);
+  SourceOffset := start * BlockAlign;
+  BytesToCopy := SamplesToCopy * BlockAlign;
+
+  FillChar(buf^, sampleLength * BlockAlign, 0);
+  if BytesToCopy > 0 then
+    Move(Ctx^.AudioPcm[SourceOffset], buf^, BytesToCopy);
+
+  Result := SamplesToCopy;
 end;
 
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
