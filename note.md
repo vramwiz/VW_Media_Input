@@ -79,17 +79,29 @@ cmd から実行する場合:
 
 ## 現在のファイルフィルター
 
-現状では実デコード未接続のため、フィルターは動画系だけにしている。
+現状のフィルターは動画系に加えて mp3 を含めている。
+動画ファイルの手元サンプルが少ないため、追加分は FFmpeg に渡す仮対応として一通り入れている。
 
 - `*.mp4`
 - `*.mov`
 - `*.mkv`
 - `*.avi`
+- `*.wmv`
+- `*.asf`
+- `*.webm`
+- `*.mpg`
+- `*.mpeg`
+- `*.m2ts`
+- `*.ts`
+- `*.m4v`
+- `*.mp3`
 
 注意:
 
-- フィルターに表示されるだけで、現時点では実際の動画デコード対応はまだ未実装。
-- 次の作業で `PluginInputBase.pas` と `Plugin_Input\FFmpegDecoder.pas` を接続する必要がある。
+- 動画ファイルは FFmpeg 経由で映像情報、映像フレーム、音声情報を返す。
+- `*.wmv` / `*.asf` / `*.webm` / `*.mpg` / `*.mpeg` / `*.m2ts` / `*.ts` / `*.m4v` はフィルター追加による仮対応で、実ファイル確認は未実施。
+- mp3 は音声専用入力として扱い、`INPUT_INFO_FLAG_AUDIO`、`audio_format`、`audio_n`、`func_read_audio` 経路で PCM16 stereo 48kHz を返す。
+- スピーカーが無いため mp3 の聴感確認は未実施だが、AviUtl2 上では問題ないように見える。
 
 ## 将来対応
 
@@ -105,9 +117,10 @@ cmd から実行する場合:
 
 mp3 について:
 
-- 将来的には FFmpeg 経由で対応したい。
-- ただし mp3 は音声のみ入力なので、`INPUT_PLUGIN_FLAG_AUDIO`、`INPUT_INFO_FLAG_AUDIO`、`audio_format`、`audio_n`、`func_read_audio` の実装が必要。
-- 動画対応が安定してから追加する。
+- FFmpeg 経由で音声専用入力として対応済み。
+- 映像ストリームが無い場合でも、音声ストリームが開ければ `TFFmpegDecoder.Open` は成功する。
+- 音声のみなので `INPUT_INFO_FLAG_VIDEO` と `BITMAPINFOHEADER` は返さず、`INPUT_INFO_FLAG_AUDIO`、`audio_format`、`audio_n`、`func_read_audio` を使う。
+- スピーカーが無いため聴感確認は未実施。波形/メーターなどでの確認は今後行う。
 
 wav について:
 
@@ -249,4 +262,39 @@ cmd.exe /s /c '"C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" &
 - スピーカーまたは波形/メーターで、実際に音声が正しく読めているか確認する。
 - 長い mp3 でシークやランダムアクセス要求が来た場合の挙動を確認する。
 - 必要なら `func_read_audio` の要求位置が戻るケースに備えて、音声デコードキャッシュ/再オープン/シーク対応を強化する。
+
+## 2026-06-02 リリース用 zip
+
+Win64 Debug ビルド後に、AviUtl2 へ配置済みのプラグインフォルダを zip 化した。
+zip 作成処理は `Setup\make_release_zip.bat` にバッチ化した。
+
+作成元:
+
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Input`
+
+作成先:
+
+- `D:\DelphiProg\test\VW_Media_Input\Setup\VW_Media_Input_2026-06-02_win64_debug.zip`
+
+作成コマンド:
+
+```bat
+Setup\make_release_zip.bat
+```
+
+zip 内容:
+
+- `VW_Media_Input\VW_Media_Input.aui2`
+- `VW_Media_Input\avutil-60.dll`
+- `VW_Media_Input\avcodec-62.dll`
+- `VW_Media_Input\avformat-62.dll`
+- `VW_Media_Input\swscale-9.dll`
+- `VW_Media_Input\swresample-6.dll`
+
+メモ:
+
+- zip は `VW_Media_Input` フォルダごと含めている。
+- 展開先は AviUtl2 の `Plugin` 配下を想定する。
+- zip の配置場所は `releases` ではなく `Setup` フォルダとする。
+- 現時点の zip は Debug ビルド由来。正式配布時は Release ビルドで作り直すか検討する。
 
