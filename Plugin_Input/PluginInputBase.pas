@@ -1,4 +1,4 @@
-unit PluginInputBase;
+﻿unit PluginInputBase;
 
 // AviUtl2入力プラグインとして公開する処理本体ユニット。
 // ファイルopen/close、情報取得、映像フレーム読み込み、音声読み込みを各デコーダへ橋渡しする。
@@ -24,7 +24,12 @@ function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 implementation
 
 uses
-  System.Math, FFmpegDecoderTypes, FFmpegDecoder, PluginAudioInputReader;
+  System.Diagnostics, System.Math, System.SyncObjs, FFmpegDecoderTypes, FFmpegDecoder, PluginAudioInputReader;
+
+const
+  MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
+  SHARED_FRAME_CACHE_CAPACITY = 16;
+  DECODE_TRACE_ENABLED = True;
 
 type
   PFileContext = ^TFileContext;
@@ -39,6 +44,7 @@ type
     Rate: Integer; // AviUtl2へ返すフレームレート分子
     Scale: Integer; // AviUtl2へ返すフレームレート分母
     FrameCount: Integer; // AviUtl2へ返す総フレーム数
+    VideoInfo: TVideoInfo; // open時に取得した動画情報
     Info: BITMAPINFOHEADER; // AviUtl2へ返す映像フォーマット
     AudioInput: TPluginAudioInputReader; // 音声読み取り用の入力リーダー
     LastDecodedFrame: Integer; // キャッシュしている直近のフレーム番号
@@ -46,12 +52,176 @@ type
     LastError: string; // 直近のデコード/音声openエラー
   end;
 
+  TSharedFrameCacheEntry = record
+    FileName: string;
+    Frame: Integer;
+    ImageSize: Integer;
+    Data: TBytes;
+    LastUsed: UInt64;
+  end;
+
+var
+  SharedFrameCache: array[0..SHARED_FRAME_CACHE_CAPACITY - 1] of TSharedFrameCacheEntry;
+  SharedFrameCacheClock: UInt64;
+  SharedFrameCacheLock: TCriticalSection;
+  ReusableDecoder: TFFmpegDecoder;
+  ReusableDecoderFileName: string;
+  ReusableDecoderInfo: TVideoInfo;
+  ReusableDecoderLastFrame: Integer;
+
+procedure DecodeTrace(const Msg: string);
+var
+  F: TextFile;
+  LogFileName: string;
+  Line: string;
+begin
+  if not DECODE_TRACE_ENABLED then
+    Exit;
+
+  Line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' [PluginInputBase] ' + Msg;
+  OutputDebugString(PChar(Line));
+  LogFileName := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
+  AssignFile(F, LogFileName);
+  try
+    if FileExists(LogFileName) then
+      Append(F)
+    else
+      Rewrite(F);
+    Writeln(F, Line);
+  finally
+    CloseFile(F);
+  end;
+end;
+
+function TryReadSharedFrameCache(const FileName: string; Frame, ImageSize: Integer; Buffer: Pointer): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if (SharedFrameCacheLock = nil) or (Buffer = nil) or (ImageSize <= 0) then
+    Exit;
+
+  SharedFrameCacheLock.Enter;
+  try
+    for I := Low(SharedFrameCache) to High(SharedFrameCache) do
+      if SameText(SharedFrameCache[I].FileName, FileName) and
+        (SharedFrameCache[I].Frame = Frame) and
+        (SharedFrameCache[I].ImageSize = ImageSize) and
+        (Length(SharedFrameCache[I].Data) = ImageSize) then
+      begin
+        Move(SharedFrameCache[I].Data[0], Buffer^, ImageSize);
+        Inc(SharedFrameCacheClock);
+        SharedFrameCache[I].LastUsed := SharedFrameCacheClock;
+        Result := True;
+        Exit;
+      end;
+  finally
+    SharedFrameCacheLock.Leave;
+  end;
+end;
+
+procedure SaveSharedFrameCache(const FileName: string; Frame, ImageSize: Integer; Buffer: Pointer);
+var
+  I: Integer;
+  Slot: Integer;
+  OldestUsed: UInt64;
+begin
+  if (SharedFrameCacheLock = nil) or (Buffer = nil) or (ImageSize <= 0) then
+    Exit;
+
+  SharedFrameCacheLock.Enter;
+  try
+    Slot := Low(SharedFrameCache);
+    OldestUsed := High(UInt64);
+    for I := Low(SharedFrameCache) to High(SharedFrameCache) do
+    begin
+      if SameText(SharedFrameCache[I].FileName, FileName) and
+        (SharedFrameCache[I].Frame = Frame) and
+        (SharedFrameCache[I].ImageSize = ImageSize) then
+      begin
+        Slot := I;
+        Break;
+      end;
+
+      if (Length(SharedFrameCache[I].Data) = 0) or (SharedFrameCache[I].LastUsed < OldestUsed) then
+      begin
+        Slot := I;
+        OldestUsed := SharedFrameCache[I].LastUsed;
+      end;
+    end;
+
+    if Length(SharedFrameCache[Slot].Data) <> ImageSize then
+      SetLength(SharedFrameCache[Slot].Data, ImageSize);
+    Move(Buffer^, SharedFrameCache[Slot].Data[0], ImageSize);
+    SharedFrameCache[Slot].FileName := FileName;
+    SharedFrameCache[Slot].Frame := Frame;
+    SharedFrameCache[Slot].ImageSize := ImageSize;
+    Inc(SharedFrameCacheClock);
+    SharedFrameCache[Slot].LastUsed := SharedFrameCacheClock;
+  finally
+    SharedFrameCacheLock.Leave;
+  end;
+end;
+
+function TryTakeReusableDecoder(const FileName: string; out Decoder: TFFmpegDecoder; out VideoInfo: TVideoInfo;
+  out LastFrame: Integer): Boolean;
+begin
+  Decoder := nil;
+  FillChar(VideoInfo, SizeOf(VideoInfo), 0);
+  LastFrame := -1;
+  Result := False;
+  if SharedFrameCacheLock = nil then
+    Exit;
+
+  SharedFrameCacheLock.Enter;
+  try
+    if (ReusableDecoder <> nil) and SameText(ReusableDecoderFileName, FileName) then
+    begin
+      Decoder := ReusableDecoder;
+      VideoInfo := ReusableDecoderInfo;
+      LastFrame := ReusableDecoderLastFrame;
+      ReusableDecoder := nil;
+      ReusableDecoderFileName := '';
+      ReusableDecoderLastFrame := -1;
+      Result := True;
+    end;
+  finally
+    SharedFrameCacheLock.Leave;
+  end;
+end;
+
+procedure SaveReusableDecoder(var Decoder: TFFmpegDecoder; const FileName: string; const VideoInfo: TVideoInfo;
+  LastFrame: Integer);
+var
+  OldDecoder: TFFmpegDecoder;
+begin
+  if (SharedFrameCacheLock = nil) or (Decoder = nil) or (FileName = '') then
+    Exit;
+
+  OldDecoder := nil;
+  SharedFrameCacheLock.Enter;
+  try
+    if ReusableDecoder <> Decoder then
+      OldDecoder := ReusableDecoder;
+    ReusableDecoder := Decoder;
+    ReusableDecoderFileName := FileName;
+    ReusableDecoderInfo := VideoInfo;
+    ReusableDecoderLastFrame := LastFrame;
+    Decoder := nil;
+  finally
+    SharedFrameCacheLock.Leave;
+  end;
+  OldDecoder.Free;
+end;
+
 // ファイル単位の状態と保持リソースを解放する。
 procedure FreeFileContext(Ctx: PFileContext);
 begin
   if Ctx = nil then
     Exit;
 
+  if Ctx^.HasVideo then
+    SaveReusableDecoder(Ctx^.Decoder, Ctx^.FileName, Ctx^.VideoInfo, Ctx^.LastDecodedFrame);
   Ctx^.Decoder.Free;
   Ctx^.AudioInput.Free;
   Ctx^.CachedFrame := nil;
@@ -101,20 +271,36 @@ var
   VideoInfo: TVideoInfo;
   ErrorMessage: string;
   AudioErrorMessage: string;
+  ReusedDecoder: Boolean;
 begin
   Result := nil;
   AudioErrorMessage := '';
+  ReusedDecoder := False;
   New(Ctx);
   FillChar(Ctx^, SizeOf(Ctx^), 0);
 
   try
     Ctx^.FileName := string(fileName);
-    Ctx^.Decoder := TFFmpegDecoder.Create;
     Ctx^.LastDecodedFrame := -1;
 
-    if Ctx^.Decoder.Open(Ctx^.FileName, VideoInfo, ErrorMessage) then
+    if TryTakeReusableDecoder(Ctx^.FileName, Ctx^.Decoder, VideoInfo, Ctx^.LastDecodedFrame) then
+      ReusedDecoder := True
+    else
+    begin
+      Ctx^.Decoder := TFFmpegDecoder.Create;
+      if not Ctx^.Decoder.Open(Ctx^.FileName, VideoInfo, ErrorMessage) then
+      begin
+        Ctx^.LastError := ErrorMessage;
+        DecodeTrace(Format('open failed file="%s" err=%s', [Ctx^.FileName, ErrorMessage]));
+        FreeFileContext(Ctx);
+        Exit;
+      end;
+    end;
+
+    if Ctx^.Decoder <> nil then
     begin
       Ctx^.HasVideo := (VideoInfo.Width > 0) and (VideoInfo.Height > 0);
+      Ctx^.VideoInfo := VideoInfo;
       Ctx^.Width := VideoInfo.Width;
       Ctx^.Height := VideoInfo.Height;
       Ctx^.DurationSec := VideoInfo.DurationSec;
@@ -149,11 +335,14 @@ begin
       else
         Ctx^.LastError := AudioErrorMessage;
 
+      DecodeTrace(Format('open ok file="%s" reused=%s last=%d width=%d height=%d duration=%.3f fps=%.6f frames=%d audio=%s audio_err=%s',
+        [Ctx^.FileName, BoolToStr(ReusedDecoder, True), Ctx^.LastDecodedFrame,
+         Ctx^.Width, Ctx^.Height, Ctx^.DurationSec, VideoInfo.Fps,
+         Ctx^.FrameCount, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage]));
+
       Result := Ctx;
       Ctx := nil;
     end
-    else
-      Ctx^.LastError := ErrorMessage;
   except
     Result := nil;
   end;
@@ -210,6 +399,10 @@ var
   ErrorMessage: string;
   ImageSize: Integer;
   Decoded: Boolean;
+  FrameGap: Integer;
+  ForwardFrame: Integer;
+  StartTick: TStopwatch;
+  DecodeRoute: string;
 begin
   Result := 0;
   if (ih = nil) or (buf = nil) then
@@ -226,23 +419,55 @@ begin
   if (frame = Ctx^.LastDecodedFrame) and (Length(Ctx^.CachedFrame) = ImageSize) then
   begin
     Move(Ctx^.CachedFrame[0], buf^, ImageSize);
+    DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=0 route=cache bytes=%d',
+      [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, ImageSize]));
     Result := ImageSize;
     Exit;
   end;
 
-  if (Ctx^.LastDecodedFrame >= 0) and (frame = Ctx^.LastDecodedFrame + 1) then
-    Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32(buf, Ctx^.Width * 4, PositionMsOut, ErrorMessage)
+  if TryReadSharedFrameCache(Ctx^.FileName, frame, ImageSize, buf) then
+  begin
+    DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=shared_cache bytes=%d',
+      [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, frame - Ctx^.LastDecodedFrame, ImageSize]));
+    Result := ImageSize;
+    Exit;
+  end;
+
+  StartTick := TStopwatch.StartNew;
+  DecodeRoute := '';
+  FrameGap := frame - Ctx^.LastDecodedFrame;
+  if (Ctx^.LastDecodedFrame >= 0) and (FrameGap > 0) and (FrameGap <= MAX_FORWARD_DECODE_GAP) then
+  begin
+    DecodeRoute := 'forward';
+    Decoded := True;
+    for ForwardFrame := Ctx^.LastDecodedFrame + 1 to frame do
+    begin
+      Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32Optional(buf, Ctx^.Width * 4,
+        ForwardFrame = frame, PositionMsOut, ErrorMessage);
+      if not Decoded then
+        Break;
+    end;
+    PositionMs := PositionMsOut;
+  end
   else
   begin
+    DecodeRoute := 'seek';
     PositionMs := Round(frame * Ctx^.Scale * 1000.0 / Ctx^.Rate);
     Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, Ctx^.Width * 4, ErrorMessage);
   end;
+  StartTick.Stop;
+
+  DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=%s ok=%s elapsed_ms=%.3f image_size=%d pos_ms=%d err=%s',
+    [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute, BoolToStr(Decoded, True),
+     StartTick.Elapsed.TotalMilliseconds, ImageSize, PositionMs, ErrorMessage]));
 
   if not Decoded then
   begin
     Ctx^.LastError := ErrorMessage;
     Exit;
   end;
+
+  SaveSharedFrameCache(Ctx^.FileName, frame, ImageSize, buf);
 
   if Length(Ctx^.CachedFrame) <> ImageSize then
     SetLength(Ctx^.CachedFrame, ImageSize);
@@ -271,5 +496,12 @@ begin
   MessageBox(hwnd, 'VW_Media_Input FFmpeg media input', 'VW_Media_Input', MB_OK);
   Result := True;
 end;
+
+initialization
+  SharedFrameCacheLock := TCriticalSection.Create;
+
+finalization
+  ReusableDecoder.Free;
+  SharedFrameCacheLock.Free;
 
 end.

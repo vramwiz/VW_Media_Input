@@ -68,6 +68,8 @@ type
     function DecodeNextFrameToBitmap(Bitmap: TBitmap; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
     function DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    // 現在位置から次の映像フレームを順方向デコードし、必要な場合だけ32bit BGRxバッファへ変換する
+    function DecodeNextFrameToBgrx32Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 開いているファイルの音声を指定サンプル数までPCM16 stereo 48kHzへ順次デコードする
     function DecodeAudioPcm16Stereo48kUntil(TargetSampleCount: Integer; var Pcm: TBytes; var SampleCount: Integer; out Finished: Boolean; out ErrorMessage: string): Boolean;
     // デバッグ用の音声再生を開始する
@@ -89,6 +91,33 @@ implementation
 uses
   FFmpegApi, FFmpegAudioConvert, FFmpegAudioOpen, FFmpegDecodeStats, FFmpegFrameConvert,
   FFmpegStreamInfo;
+
+const
+  DECODE_TRACE_ENABLED = True;
+
+procedure DecodeTrace(const Msg: string);
+var
+  F: TextFile;
+  LogFileName: string;
+  Line: string;
+begin
+  if not DECODE_TRACE_ENABLED then
+    Exit;
+
+  Line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' [FFmpegDecoder] ' + Msg;
+  OutputDebugString(PChar(Line));
+  LogFileName := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
+  AssignFile(F, LogFileName);
+  try
+    if FileExists(LogFileName) then
+      Append(F)
+    else
+      Rewrite(F);
+    Writeln(F, Line);
+  finally
+    CloseFile(F);
+  end;
+end;
 
 // デコーダインスタンスを初期化する
 constructor TFFmpegDecoder.Create;
@@ -548,6 +577,10 @@ var
   Ret: Integer; // FFmpeg APIの戻り値
   TargetTs: Int64; // 目的位置のストリーム時間軸PTS
   Stopwatch: TStopwatch; // デコード負荷測定用タイマー
+  TotalStopwatch: TStopwatch;
+  ReadPacketCount: Integer;
+  VideoPacketCount: Integer;
+  DecodedFrameCount: Integer;
 begin
   ErrorMessage := '';
   Result := False;
@@ -565,6 +598,10 @@ begin
   end;
 
   try
+    ReadPacketCount := 0;
+    VideoPacketCount := 0;
+    DecodedFrameCount := 0;
+    TotalStopwatch := TStopwatch.StartNew;
     TargetTs := StreamTimestampFromMs(Stream, PositionMs);
     Ret := TFFmpegApi.av_seek_frame(FormatContext, FStreamIndex, TargetTs, AVSEEK_FLAG_BACKWARD);
     if Ret < 0 then
@@ -578,7 +615,11 @@ begin
 
     while TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0 do
     begin
+      Inc(ReadPacketCount);
       try
+        if Packet.stream_index = FStreamIndex then
+          Inc(VideoPacketCount);
+
         if Packet.stream_index <> FStreamIndex then
           Continue;
 
@@ -589,12 +630,17 @@ begin
 
         while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
         begin
+          Inc(DecodedFrameCount);
           if (Frame.pts = AV_NOPTS_VALUE) or (Frame.pts >= TargetTs) then
           begin
             CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
               FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
             Stopwatch.Stop;
+            TotalStopwatch.Stop;
             UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+            DecodeTrace(Format('seek_decode file="%s" pos_ms=%d target_ts=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
+              [FFileName, PositionMs, TargetTs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+               TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
             Result := True;
             Exit;
           end;
@@ -604,6 +650,10 @@ begin
       end;
     end;
 
+    TotalStopwatch.Stop;
+    DecodeTrace(Format('seek_decode_failed file="%s" pos_ms=%d target_ts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
+      [FFileName, PositionMs, TargetTs, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+       TotalStopwatch.Elapsed.TotalMilliseconds]));
     ErrorMessage := 'Frame could not be decoded.';
   except
     on E: Exception do
@@ -749,6 +799,110 @@ begin
       end;
     end;
 
+    ErrorMessage := 'End of stream.';
+  except
+    on E: Exception do
+      ErrorMessage := E.ClassName + ': ' + E.Message;
+  end;
+end;
+
+function TFFmpegDecoder.DecodeNextFrameToBgrx32Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+var
+  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
+  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
+  Packet: PAVPacket; // 読み込みに再利用するAVPacket
+  Frame: PAVFrame; // デコード結果を受け取るAVFrame
+  Stream: PAVStream; // 対象の映像ストリーム
+  Ret: Integer; // FFmpeg APIの戻り値
+  Stopwatch: TStopwatch; // デコード負荷測定用タイマー
+  TotalStopwatch: TStopwatch;
+  ReadPacketCount: Integer;
+  VideoPacketCount: Integer;
+  DecodedFrameCount: Integer;
+begin
+  ErrorMessage := '';
+  PositionMs := -1;
+  Result := False;
+
+  FormatContext := PAVFormatContext(FFormatContext);
+  CodecContext := PAVCodecContext(FCodecContext);
+  Packet := PAVPacket(FPacket);
+  Frame := PAVFrame(FFrame);
+  Stream := PAVStream(FStream);
+
+  if (FormatContext = nil) or (CodecContext = nil) or (Packet = nil) or (Frame = nil) or (Stream = nil) then
+  begin
+    ErrorMessage := 'Decoder is not open.';
+    Exit;
+  end;
+
+  try
+    ReadPacketCount := 0;
+    VideoPacketCount := 0;
+    DecodedFrameCount := 0;
+    TotalStopwatch := TStopwatch.StartNew;
+    Stopwatch := TStopwatch.StartNew;
+    if TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 then
+    begin
+      Inc(DecodedFrameCount);
+      if ConvertFrame then
+        CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
+          FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+      Stopwatch.Stop;
+      TotalStopwatch.Stop;
+      UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+      PositionMs := StreamTimestampToMs(Stream, Frame.pts);
+      DecodeTrace(Format('next_decode file="%s" convert=%s source=buffered pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
+        [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+         TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
+      Result := True;
+      Exit;
+    end;
+
+    while TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0 do
+    begin
+      Inc(ReadPacketCount);
+      try
+        if Packet.stream_index = FAudioStreamIndex then
+        begin
+          DecodeAudioPacket(Packet);
+          Continue;
+        end;
+
+        if Packet.stream_index <> FStreamIndex then
+          Continue;
+        Inc(VideoPacketCount);
+
+        Stopwatch := TStopwatch.StartNew;
+        Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
+        if Ret < 0 then
+          Continue;
+
+        while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
+        begin
+          Inc(DecodedFrameCount);
+          if ConvertFrame then
+            CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
+              FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+          Stopwatch.Stop;
+          TotalStopwatch.Stop;
+          UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+          PositionMs := StreamTimestampToMs(Stream, Frame.pts);
+          DecodeTrace(Format('next_decode file="%s" convert=%s source=packet pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
+            [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+             TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
+          Result := True;
+          Exit;
+        end;
+      finally
+        TFFmpegApi.av_packet_unref(Packet);
+      end;
+    end;
+
+    TotalStopwatch.Stop;
+    DecodeTrace(Format('next_decode_failed file="%s" convert=%s read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
+      [FFileName, BoolToStr(ConvertFrame, True), ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+       TotalStopwatch.Elapsed.TotalMilliseconds]));
     ErrorMessage := 'End of stream.';
   except
     on E: Exception do
