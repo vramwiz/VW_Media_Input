@@ -1,0 +1,95 @@
+﻿library VW_Media_Input;
+
+uses
+  Winapi.Windows,
+  System.SysUtils,
+  PluginInputBase in 'Plugin_Input\PluginInputBase.pas',
+  AviUtl2Render in 'AviUtl\Render\AviUtl2Render.pas',
+  RTTIPersistent in 'Lib\RTTIPersistent\RTTIPersistent.pas',
+  SectionFileManager in 'Lib\SectionFileManager\SectionFileManager.pas',
+  TextEncodingUtils in 'Lib\TextEncoding\TextEncodingUtils.pas',
+  SharedMemoryManager in 'AviUtl\SharedMemory\SharedMemoryManager.pas',
+  SharedMemoryBase in 'Lib\SharedMemory\SharedMemoryBase.pas',
+  AviUtl2InputTypes in 'AviUtl\Input\AviUtl2InputTypes.pas';
+
+//------------------------------------------------------------------------------
+// ファイルを開く
+//------------------------------------------------------------------------------
+function func_open(fileName: LPCWSTR): INPUT_HANDLE; cdecl;
+begin
+  Result := PluginInputOpen(fileName);
+end;
+
+//------------------------------------------------------------------------------
+// ファイルを閉じる
+//------------------------------------------------------------------------------
+function func_close(ih: INPUT_HANDLE): BOOL; cdecl;
+begin
+  Result := PluginInputClose(ih);
+end;
+
+//------------------------------------------------------------------------------
+// 情報取得
+//------------------------------------------------------------------------------
+function func_info_get(ih: INPUT_HANDLE; info: PInputInfo): BOOL; cdecl;
+begin
+  Result := PluginInputGetInfo(ih,info);
+end;
+
+//------------------------------------------------------------------------------
+// フレーム読み込み（共有メモリの内容を反映してから描画）
+//------------------------------------------------------------------------------
+function func_read_video(ih: INPUT_HANDLE; frame: Integer; buf: Pointer): Integer; cdecl;
+begin
+  Result := PluginInputReadVideo(ih,frame,buf);
+end;
+
+//------------------------------------------------------------------------------
+// 音声（なし）
+//------------------------------------------------------------------------------
+function func_read_audio(ih: INPUT_HANDLE; start, length: Integer; buf: Pointer): Integer; cdecl;
+begin
+  Result := 0;
+end;
+
+//------------------------------------------------------------------------------
+// 設定ダイアログ（確認用）
+//------------------------------------------------------------------------------
+function func_config(hwnd: HWND; hinst: HINST): BOOL; cdecl;
+begin
+  Result := PluginInputConfig(hwnd,hinst);
+end;
+
+//------------------------------------------------------------------------------
+// プラグインテーブル
+//------------------------------------------------------------------------------
+var
+  Plugin: TInputPluginTable = (
+    flag: INPUT_PLUGIN_FLAG_VIDEO;
+    name: 'VW_Media_Input';
+    filefilter: 'Media files (*.mp4;*.mov;*.mkv;*.avi;*.mp3;*.wav)'#0'*.mp4;*.mov;*.mkv;*.avi;*.mp3;*.wav'#0;
+    //filefilter: nil;
+    information: 'VW Media Input Plugin AviUtl2';
+    func_open: func_open;
+    func_close: func_close;
+    func_info_get: func_info_get;
+    func_read_video: func_read_video;
+    func_read_audio: func_read_audio;
+    func_config: func_config;
+    func_set_track: nil;
+    func_time_to_frame: nil
+  );
+
+//------------------------------------------------------------------------------
+function GetInputPluginTable: PInputPluginTable; cdecl;
+begin
+  Result := @Plugin;
+end;
+
+exports
+  GetInputPluginTable name 'GetInputPluginTable';
+
+begin
+end.
+
+
