@@ -143,6 +143,13 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="AviUtl\SharedMemory\SharedMemoryManager.pas"/>
         <DCCReference Include="Lib\SharedMemory\SharedMemoryBase.pas"/>
         <DCCReference Include="AviUtl\Input\AviUtl2InputTypes.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegApi.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegDecoderTypes.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegDecodeStats.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegFrameConvert.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegStreamInfo.pas"/>
+        <DCCReference Include="FFmpegDecoder.pas"/>
+        <DCCReference Include="Plugin_Input\PluginAudioInputReader.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -184,7 +191,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
-                <DeployFile LocalName="C:\ProgramData\aviutl2\Plugin\VW_Media_Input.dll" Configuration="Debug" Class="ProjectOutput">
+                <DeployFile LocalName="C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.dll" Configuration="Debug" Class="ProjectOutput">
                     <Platform Name="Win64">
                         <RemoteName>VW_Media_Input.dll</RemoteName>
                         <Overwrite>true</Overwrite>
@@ -1180,15 +1187,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <PreBuildEventIgnoreExitCode>False</PreBuildEventIgnoreExitCode>
         <PreLinkEvent/>
         <PreLinkEventIgnoreExitCode>False</PreLinkEventIgnoreExitCode>
-        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avutil-60.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swresample-6.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swscale-9.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avcodec-62.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avformat-62.dll&quot; &quot;$(OUTPUTDIR)&quot;
-if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot;
-if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot;
-</PostBuildEvent>
+        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avutil-60.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swresample-6.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swscale-9.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avcodec-62.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avformat-62.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot;</PostBuildEvent>
         <PostBuildEventIgnoreExitCode>False</PostBuildEventIgnoreExitCode>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Release' And '$(Platform)'=='Win64'">
@@ -1196,15 +1195,7 @@ if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot; del /Q &quot;$(OUTPUTDIR)$(P
         <PreBuildEventIgnoreExitCode>False</PreBuildEventIgnoreExitCode>
         <PreLinkEvent/>
         <PreLinkEventIgnoreExitCode>False</PreLinkEventIgnoreExitCode>
-        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avutil-60.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swresample-6.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swscale-9.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avcodec-62.dll&quot; &quot;$(OUTPUTDIR)&quot;
-copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avformat-62.dll&quot; &quot;$(OUTPUTDIR)&quot;
-if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot;
-if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot;
-</PostBuildEvent>
+        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avutil-60.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swresample-6.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\swscale-9.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avcodec-62.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;copy /Y &quot;$(MSBuildProjectDirectory)\$(Platform)\$(Config)\avformat-62.dll&quot; &quot;$(OUTPUTDIR)&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot;</PostBuildEvent>
         <PostBuildEventIgnoreExitCode>False</PostBuildEventIgnoreExitCode>
     </PropertyGroup>
 </Project>

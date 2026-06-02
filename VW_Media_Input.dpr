@@ -10,7 +10,14 @@ uses
   TextEncodingUtils in 'Lib\TextEncoding\TextEncodingUtils.pas',
   SharedMemoryManager in 'AviUtl\SharedMemory\SharedMemoryManager.pas',
   SharedMemoryBase in 'Lib\SharedMemory\SharedMemoryBase.pas',
-  AviUtl2InputTypes in 'AviUtl\Input\AviUtl2InputTypes.pas';
+  AviUtl2InputTypes in 'AviUtl\Input\AviUtl2InputTypes.pas',
+  FFmpegApi in 'Plugin_Input\FFmpegApi.pas',
+  FFmpegDecoderTypes in 'Plugin_Input\FFmpegDecoderTypes.pas',
+  FFmpegDecodeStats in 'Plugin_Input\FFmpegDecodeStats.pas',
+  FFmpegFrameConvert in 'Plugin_Input\FFmpegFrameConvert.pas',
+  FFmpegStreamInfo in 'Plugin_Input\FFmpegStreamInfo.pas',
+  FFmpegDecoder in 'FFmpegDecoder.pas',
+  PluginAudioInputReader in 'Plugin_Input\PluginAudioInputReader.pas';
 
 //------------------------------------------------------------------------------
 // ファイルを開く
