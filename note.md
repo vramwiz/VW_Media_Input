@@ -79,7 +79,7 @@ cmd から実行する場合:
 
 ## 現在のファイルフィルター
 
-現状のフィルターは動画系に加えて mp3 を含めている。
+現状のフィルターは動画系に加えて音声系を含めている。
 動画ファイルの手元サンプルが少ないため、追加分は FFmpeg に渡す仮対応として一通り入れている。
 
 - `*.mp4`
@@ -95,12 +95,19 @@ cmd から実行する場合:
 - `*.ts`
 - `*.m4v`
 - `*.mp3`
+- `*.wav`
+- `*.m4a`
+- `*.aac`
+- `*.wma`
+- `*.flac`
+- `*.ogg`
+- `*.opus`
 
 注意:
 
 - 動画ファイルは FFmpeg 経由で映像情報、映像フレーム、音声情報を返す。
 - `*.wmv` / `*.asf` / `*.webm` / `*.mpg` / `*.mpeg` / `*.m2ts` / `*.ts` / `*.m4v` はフィルター追加による仮対応で、実ファイル確認は未実施。
-- mp3 は音声専用入力として扱い、`INPUT_INFO_FLAG_AUDIO`、`audio_format`、`audio_n`、`func_read_audio` 経路で PCM16 stereo 48kHz を返す。
+- `*.mp3` / `*.wav` / `*.m4a` / `*.aac` / `*.wma` / `*.flac` / `*.ogg` / `*.opus` は音声専用入力として扱い、`INPUT_INFO_FLAG_AUDIO`、`audio_format`、`audio_n`、`func_read_audio` 経路で PCM16 stereo 48kHz を返す。
 - スピーカーが無いため mp3 の聴感確認は未実施だが、AviUtl2 上では問題ないように見える。
 
 ## 将来対応
@@ -122,11 +129,15 @@ mp3 について:
 - 音声のみなので `INPUT_INFO_FLAG_VIDEO` と `BITMAPINFOHEADER` は返さず、`INPUT_INFO_FLAG_AUDIO`、`audio_format`、`audio_n`、`func_read_audio` を使う。
 - スピーカーが無いため聴感確認は未実施。波形/メーターなどでの確認は今後行う。
 
-wav について:
+音声形式について:
 
-- wav は AviUtl2 標準機能で対応できる可能性が高い。
-- そのため、このプラグインで優先して処理する必要はないかもしれない。
-- 必要性が出た場合だけ対応を検討する。
+- `*.wav` / `*.m4a` / `*.aac` / `*.wma` / `*.flac` / `*.ogg` / `*.opus` をフィルターへ追加済み。
+- 基本的には mp3 と同じ音声専用入力経路で扱う。
+- FFmpeg が開ける音声ストリームなら PCM16 stereo 48kHz として返せる可能性が高い。
+- `*.wav` は AviUtl2 標準入力で扱える可能性が高いため、`VW_Media_Input.dpr` の `MEDIA_FILE_FILTER` 定数でコメント切り替えできるようにしている。
+  - `MEDIA_FILE_FILTER_WITH_WAV`: wav も FFmpeg 経由で扱う。
+  - `MEDIA_FILE_FILTER_WITHOUT_WAV`: wav はこのプラグインのフィルターから外し、標準入力へ任せる。
+- 実ファイル確認は今後行う。
 
 ## FFmpeg 04 からの注意
 

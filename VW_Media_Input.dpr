@@ -66,11 +66,24 @@ end;
 //------------------------------------------------------------------------------
 // プラグインテーブル
 //------------------------------------------------------------------------------
+const
+  MEDIA_FILE_FILTER_WITH_WAV =
+    'Media files (*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.asf;*.webm;*.mpg;*.mpeg;*.m2ts;*.ts;*.m4v;*.mp3;*.wav;*.m4a;*.aac;*.wma;*.flac;*.ogg;*.opus)'#0 +
+    '*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.asf;*.webm;*.mpg;*.mpeg;*.m2ts;*.ts;*.m4v;*.mp3;*.wav;*.m4a;*.aac;*.wma;*.flac;*.ogg;*.opus'#0;
+  MEDIA_FILE_FILTER_WITHOUT_WAV =
+    'Media files (*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.asf;*.webm;*.mpg;*.mpeg;*.m2ts;*.ts;*.m4v;*.mp3;*.m4a;*.aac;*.wma;*.flac;*.ogg;*.opus)'#0 +
+    '*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.asf;*.webm;*.mpg;*.mpeg;*.m2ts;*.ts;*.m4v;*.mp3;*.m4a;*.aac;*.wma;*.flac;*.ogg;*.opus'#0;
+
+  // wav は AviUtl2 標準入力で扱える可能性が高い。
+  // FFmpeg 経由で読ませたい場合は WITH_WAV、標準入力へ任せたい場合は WITHOUT_WAV に切り替える。
+  MEDIA_FILE_FILTER = MEDIA_FILE_FILTER_WITH_WAV;
+  //MEDIA_FILE_FILTER = MEDIA_FILE_FILTER_WITHOUT_WAV;
+
 var
   Plugin: TInputPluginTable = (
     flag: INPUT_PLUGIN_FLAG_VIDEO or INPUT_PLUGIN_FLAG_AUDIO;
     name: '動画/音声入力';
-    filefilter: 'Media files (*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.asf;*.webm;*.mpg;*.mpeg;*.m2ts;*.ts;*.m4v;*.mp3)'#0'*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.asf;*.webm;*.mpg;*.mpeg;*.m2ts;*.ts;*.m4v;*.mp3'#0;
+    filefilter: MEDIA_FILE_FILTER;
     //filefilter: nil;
     information: '様々な動画/音声形式をAviUtl2上で扱うための軽量プラグイン';
     func_open: func_open;
