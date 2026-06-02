@@ -3,8 +3,7 @@ unit PluginInputBase;
 interface
 
 uses
-  Winapi.Windows,System.SysUtils, AviUtl2InputTypes,Vcl.Graphics,Math;
-
+  Winapi.Windows, System.SysUtils, AviUtl2InputTypes;
 
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
@@ -14,209 +13,199 @@ function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 
 implementation
 
-uses SharedMemoryManager;
+uses
+  System.Math, FFmpegDecoder;
 
 type
   PFileContext = ^TFileContext;
   TFileContext = record
-    Width   : Integer;              // 動画の横サイズ（ピクセル）
-    Height  : Integer;              // 動画の縦サイズ（ピクセル）
-    MaxSec  : Double;               // 動画の最大再生時間（秒）
-    Rate    : Integer;              // AviUtl2 の rate（分子）
-    Scale   : Integer;              // AviUtl2 の scale（分母）
-    Info    : BITMAPINFOHEADER;     // AviUtlへ渡す動画フォーマット情報
+    Decoder: TFFmpegDecoder;
+    FileName: string;
+    Width: Integer;
+    Height: Integer;
+    DurationSec: Double;
+    Rate: Integer;
+    Scale: Integer;
+    FrameCount: Integer;
+    Info: BITMAPINFOHEADER;
+    LastDecodedFrame: Integer;
+    CachedFrame: TBytes;
+    LastError: string;
   end;
 
-procedure ParseBaseFileName(
-  const FileName: string;
-  out Width, Height: Integer;
-  out MaxSec: Double;
-  out Rate, Scale: Integer
-);
-var
-  Base  : string;
-  Parts : TArray<string>;
-  Fps   : Double;
-  P     : Integer;
+procedure FreeFileContext(Ctx: PFileContext);
 begin
-  // デフォルト値
-  Width  := 1920;
-  Height := 1080;
-  MaxSec := 30.0;
+  if Ctx = nil then
+    Exit;
 
-  Fps   := 30.0;   // 論理FPS（ファイル名解釈用）
-  Scale := 1;      // AviUtl2 scale（分母）
+  Ctx^.Decoder.Free;
+  Dispose(Ctx);
+end;
 
-  // ファイル名のみ取り出して拡張子除去
-  Base := ChangeFileExt(ExtractFileName(FileName), '');
-  if Base = '' then Exit;
-
-  // : があれば右側のみ採用（表示名を除外）
-  P := Pos(':', Base);
-  if P > 0 then
-    Base := Copy(Base, P + 1, MaxInt);
-
-  // 従来どおり _ 区切り解析
-  Parts := Base.Split(['_']);
-
-  // 幅・高さ
-  if Length(Parts) >= 2 then
+function GreatestCommonDivisor(A, B: Integer): Integer;
+var
+  T: Integer;
+begin
+  A := Abs(A);
+  B := Abs(B);
+  while B <> 0 do
   begin
-    Width  := StrToIntDef(Parts[0], Width);
-    Height := StrToIntDef(Parts[1], Height);
-    MaxSec := 0.0;
+    T := A mod B;
+    A := B;
+    B := T;
   end;
+  if A = 0 then
+    Result := 1
+  else
+    Result := A;
+end;
 
-  // 秒
-  if Length(Parts) >= 3 then
-    MaxSec := StrToFloatDef(Parts[2], MaxSec);
+procedure FpsToRateScale(Fps: Double; out Rate, Scale: Integer);
+var
+  Divisor: Integer;
+begin
+  if Fps <= 0 then
+    Fps := 30.0;
 
-  // fps（論理値）
-  if Length(Parts) >= 4 then
-    Fps := StrToFloatDef(Parts[3], Fps);
-
-  // scale
-  if Length(Parts) >= 5 then
-    Scale := StrToIntDef(Parts[4], Scale);
-
-  if Scale <= 0 then
-    Scale := 1;
-
-  // AviUtl2 用 rate を算出
+  Scale := 1000;
   Rate := Round(Fps * Scale);
   if Rate <= 0 then
-    Rate := 30;
+    Rate := 30000;
+
+  Divisor := GreatestCommonDivisor(Rate, Scale);
+  Rate := Rate div Divisor;
+  Scale := Scale div Divisor;
 end;
-//------------------------------------------------------------------------------
-// ファイルを開く
-//------------------------------------------------------------------------------
+
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
 var
-  Ctx   : PFileContext;
-  Name  : string;
+  Ctx: PFileContext;
+  VideoInfo: TVideoInfo;
+  ErrorMessage: string;
 begin
   Result := nil;
-
   New(Ctx);
   FillChar(Ctx^, SizeOf(Ctx^), 0);
 
   try
-    Name := string(fileName);
+    Ctx^.FileName := string(fileName);
+    Ctx^.Decoder := TFFmpegDecoder.Create;
+    Ctx^.LastDecodedFrame := -1;
 
-    // ファイル名からサイズ・時間・rate・scale を取得
-    ParseBaseFileName(
-      Name,
-      Ctx^.Width,
-      Ctx^.Height,
-      Ctx^.MaxSec,
-      Ctx^.Rate,
-      Ctx^.Scale
-    );
+    if Ctx^.Decoder.Open(Ctx^.FileName, VideoInfo, ErrorMessage) then
+    begin
+      Ctx^.Width := VideoInfo.Width;
+      Ctx^.Height := VideoInfo.Height;
+      Ctx^.DurationSec := VideoInfo.DurationSec;
+      FpsToRateScale(VideoInfo.Fps, Ctx^.Rate, Ctx^.Scale);
 
-    // AviUtlへ渡す画像情報
-    Ctx^.Info.biSize        := SizeOf(BITMAPINFOHEADER);
-    Ctx^.Info.biWidth       := Ctx^.Width;
-    Ctx^.Info.biHeight      := Ctx^.Height;
-    Ctx^.Info.biPlanes      := 1;
-    Ctx^.Info.biBitCount    := 32;
-    Ctx^.Info.biCompression := BI_RGB;
-    Ctx^.Info.biSizeImage   := Ctx^.Width * Ctx^.Height * 4;
+      if Ctx^.DurationSec > 0 then
+        Ctx^.FrameCount := Max(1, Ceil(Ctx^.DurationSec * Ctx^.Rate / Ctx^.Scale))
+      else
+        Ctx^.FrameCount := 1;
 
-    Result := Ctx;
+      Ctx^.Info.biSize := SizeOf(BITMAPINFOHEADER);
+      Ctx^.Info.biWidth := Ctx^.Width;
+      Ctx^.Info.biHeight := Ctx^.Height;
+      Ctx^.Info.biPlanes := 1;
+      Ctx^.Info.biBitCount := 32;
+      Ctx^.Info.biCompression := BI_RGB;
+      Ctx^.Info.biSizeImage := Ctx^.Width * Ctx^.Height * 4;
+
+      Result := Ctx;
+      Ctx := nil;
+    end
+    else
+      Ctx^.LastError := ErrorMessage;
   except
-    Dispose(Ctx);
     Result := nil;
   end;
+
+  FreeFileContext(Ctx);
 end;
 
-
-
-//------------------------------------------------------------------------------
-// ファイルを閉じる
-//------------------------------------------------------------------------------
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
-var
-  Ctx: PFileContext;
 begin
   Result := False;
-  if ih = nil then Exit;
+  if ih = nil then
+    Exit;
 
-  Ctx := PFileContext(ih);
-
-  Dispose(Ctx);
+  FreeFileContext(PFileContext(ih));
   Result := True;
 end;
 
-//------------------------------------------------------------------------------
-// 情報取得
-//------------------------------------------------------------------------------
 function PluginInputGetInfo(ih: INPUT_HANDLE; info: PInputInfo): BOOL;
 var
   Ctx: PFileContext;
 begin
   Result := False;
-  if (ih = nil) or (info = nil) then Exit;
+  if (ih = nil) or (info = nil) then
+    Exit;
 
   Ctx := PFileContext(ih);
-
   FillChar(info^, SizeOf(TInputInfo), 0);
   info^.flag := INPUT_INFO_FLAG_VIDEO;
-
-  // AviUtl2 正規値をそのまま設定
-  info^.rate  := Ctx^.Rate;
+  info^.rate := Ctx^.Rate;
   info^.scale := Ctx^.Scale;
-
-  // 総フレーム数（AviUtl2 仕様そのまま）
-  if (info^.rate > 0) and (info^.scale > 0) then
-    info^.n := Ceil(Ctx^.MaxSec * info^.rate / info^.scale)
-  else
-    info^.n := 0;
-
-  info^.format      := @Ctx^.Info;
+  info^.n := Ctx^.FrameCount;
+  info^.format := @Ctx^.Info;
   info^.format_size := SizeOf(BITMAPINFOHEADER);
-
   Result := True;
 end;
 
-//------------------------------------------------------------------------------
-// フレーム読み込み（共有メモリの内容を反映してから描画）
-//------------------------------------------------------------------------------
 function PluginInputReadVideo(ih: INPUT_HANDLE; frame: Integer; buf: Pointer): Integer;
 var
-  Ctx : PFileContext;
-  Sec : Double;
+  Ctx: PFileContext;
+  PositionMs: Integer;
+  PositionMsOut: Integer;
+  ErrorMessage: string;
+  ImageSize: Integer;
+  Decoded: Boolean;
 begin
   Result := 0;
-  if (ih = nil) or (buf = nil) then Exit;
-  if (GSharedBase = nil) then Exit;
+  if (ih = nil) or (buf = nil) then
+    Exit;
 
   Ctx := PFileContext(ih);
+  if Ctx^.Decoder = nil then
+    Exit;
 
-  // AviUtl2 定義どおりの秒算出
-  if (Ctx^.Rate > 0) and (Ctx^.Scale > 0) then
-    Sec := frame * Ctx^.Scale / Ctx^.Rate
+  if frame < 0 then
+    frame := 0;
+  ImageSize := Ctx^.Info.biSizeImage;
+
+  if (frame = Ctx^.LastDecodedFrame) and (Length(Ctx^.CachedFrame) = ImageSize) then
+  begin
+    Move(Ctx^.CachedFrame[0], buf^, ImageSize);
+    Result := ImageSize;
+    Exit;
+  end;
+
+  if (Ctx^.LastDecodedFrame >= 0) and (frame = Ctx^.LastDecodedFrame + 1) then
+    Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32(buf, Ctx^.Width * 4, PositionMsOut, ErrorMessage)
   else
-    Sec := 0.0;
+  begin
+    PositionMs := Round(frame * Ctx^.Scale * 1000.0 / Ctx^.Rate);
+    Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, Ctx^.Width * 4, ErrorMessage);
+  end;
 
-  // 共有メモリへ書き込み（意味は従来と同一）
-  GSharedBase.SetInt(  0, Ctx^.Rate);    // rate
-  GSharedBase.SetInt(  1, frame);        // frame
-  GSharedBase.SetFloat(2, Sec);          // 秒位置
-  GSharedBase.SetInt(3, Ctx^.Width);     // 横幅
-  GSharedBase.SetInt(4, Ctx^.Height);    // 縦幅
+  if not Decoded then
+  begin
+    Ctx^.LastError := ErrorMessage;
+    Exit;
+  end;
 
-  Result := Ctx^.Info.biSizeImage;
+  if Length(Ctx^.CachedFrame) <> ImageSize then
+    SetLength(Ctx^.CachedFrame, ImageSize);
+  Move(buf^, Ctx^.CachedFrame[0], ImageSize);
+  Ctx^.LastDecodedFrame := frame;
+  Result := ImageSize;
 end;
 
-
-//------------------------------------------------------------------------------
-// 設定ダイアログ（確認用）
-//------------------------------------------------------------------------------
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 begin
-  MessageBox(hwnd, 'Syncroh2 Base Plugin', 'AviUtl2 Syncroh2 Plugin', MB_OK);
+  MessageBox(hwnd, 'VW_Media_Input FFmpeg video input', 'VW_Media_Input', MB_OK);
   Result := True;
 end;
-
 
 end.

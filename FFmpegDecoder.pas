@@ -80,6 +80,11 @@ type
     FPacket: Pointer; // 読み込みに再利用するAVPacket
     FFrame: Pointer; // デコードに再利用するAVFrame
     FInfo: TVideoInfo; // 現在開いている動画の基本情報
+    FDirectSwsContext: Pointer; // AviUtl2バッファ直接出力用の色変換コンテキスト
+    FDirectSwsSrcWidth: Integer; // 直接出力用swsの入力幅
+    FDirectSwsSrcHeight: Integer; // 直接出力用swsの入力高さ
+    FDirectSwsSrcFormat: Integer; // 直接出力用swsの入力ピクセル形式
+    FDirectSwsDstFormat: Integer; // 直接出力用swsの出力ピクセル形式
     // 音声パケットをデコードし、デバッグ用にPCM再生と統計更新を行う
     procedure DecodeAudioPacket(Packet: Pointer);
     // waveOutで再生完了したPCMバッファを解放する
@@ -103,8 +108,12 @@ type
     function Open(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
     // 指定ミリ秒位置へシークしてフレームをBitmapへ変換する
     function DecodeFrameToBitmap(PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean; overload;
+    // 指定ミリ秒位置へシークしてフレームを32bit BGRxバッファへ直接変換する
+    function DecodeFrameToBgrx32(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードする
     function DecodeNextFrameToBitmap(Bitmap: TBitmap; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    // 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
+    function DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // デバッグ用の音声再生を開始する
     function StartAudioPlayback(out ErrorMessage: string): Boolean;
     // デバッグ用の音声再生を停止する
@@ -301,6 +310,7 @@ const
   AV_TIME_BASE = 1000000;
   AVSEEK_FLAG_BACKWARD = 1;
   AV_PIX_FMT_BGR24 = 3;
+  AV_PIX_FMT_BGRA = 28;
   SWS_BILINEAR = 2;
   AV_NOPTS_VALUE = -9223372036854775808;
   AV_SAMPLE_FMT_S16 = 1;
@@ -348,6 +358,8 @@ type
     class var swr_init: Tswr_init; // 音声変換コンテキストを初期化する関数
     class var swr_convert: Tswr_convert; // 音声フレームをPCMへ変換する関数
     class var swr_free: Tswr_free; // 音声変換コンテキストを解放する関数
+    // この入力プラグインが置かれているフォルダを取得する
+    class function ModuleDirectory: string; static;
     // 指定DLLを実行ファイルフォルダからロードする
     class function LoadDll(const DllPath, DllName: string): HMODULE; static;
     // DLLから指定関数を取得する
@@ -358,6 +370,19 @@ type
     // FFmpegエラーコードを表示用文字列に変換する
     class function ErrorText(Code: Integer): string; static;
   end;
+
+// この入力プラグインが置かれているフォルダを取得する
+class function TFFmpegApi.ModuleDirectory: string;
+var
+  ModuleFileName: array[0..MAX_PATH - 1] of Char;
+  Len: DWORD;
+begin
+  Len := GetModuleFileName(HInstance, ModuleFileName, Length(ModuleFileName));
+  if Len > 0 then
+    Result := IncludeTrailingPathDelimiter(ExtractFilePath(string(ModuleFileName)))
+  else
+    Result := ExtractFilePath(ParamStr(0));
+end;
 
 // 指定DLLを実行ファイルフォルダからロードする
 class function TFFmpegApi.LoadDll(const DllPath, DllName: string): HMODULE;
@@ -391,7 +416,7 @@ begin
   if FLoaded then
     Exit;
 
-  DllPath := ExtractFilePath(ParamStr(0));
+  DllPath := ModuleDirectory;
   SetDllDirectory(PChar(DllPath));
 
   FAvUtil := LoadDll(DllPath, 'avutil-60.dll');
@@ -538,6 +563,64 @@ begin
     Info.Audio.DurationSec := Info.DurationSec;
 end;
 
+// AVFrameを32bit BGRxの呼び出し元バッファへ直接変換する
+procedure CopyFrameToBgrx32Buffer(
+  Frame: PAVFrame;
+  Buffer: Pointer;
+  BufferStride: Integer;
+  var ScaleContext: Pointer;
+  var CachedSrcWidth: Integer;
+  var CachedSrcHeight: Integer;
+  var CachedSrcFormat: Integer;
+  var CachedDstFormat: Integer
+);
+var
+  DstData: array[0..3] of PByte;
+  DstLinesize: array[0..3] of Integer;
+  DstFormat: Integer;
+begin
+  if (Frame = nil) or (Frame.width <= 0) or (Frame.height <= 0) then
+    raise EFFmpegDecoder.Create('Decoded frame has invalid size.');
+  if Buffer = nil then
+    raise EFFmpegDecoder.Create('Destination buffer is nil.');
+  if BufferStride <= 0 then
+    BufferStride := Frame.width * 4;
+  DstFormat := AV_PIX_FMT_BGRA;
+
+  FillChar(DstData, SizeOf(DstData), 0);
+  FillChar(DstLinesize, SizeOf(DstLinesize), 0);
+
+  DstData[0] := PByte(NativeUInt(Buffer) + NativeUInt((Frame.height - 1) * BufferStride));
+  DstLinesize[0] := -BufferStride;
+
+  if Assigned(ScaleContext) and
+     ((CachedSrcWidth <> Frame.width) or
+      (CachedSrcHeight <> Frame.height) or
+      (CachedSrcFormat <> Frame.format) or
+      (CachedDstFormat <> DstFormat)) then
+  begin
+    TFFmpegApi.sws_freeContext(PSwsContext(ScaleContext));
+    ScaleContext := nil;
+  end;
+
+  if not Assigned(ScaleContext) then
+  begin
+    ScaleContext := TFFmpegApi.sws_getContext(Frame.width, Frame.height, Frame.format,
+      Frame.width, Frame.height, DstFormat, SWS_BILINEAR, nil, nil, nil);
+    CachedSrcWidth := Frame.width;
+    CachedSrcHeight := Frame.height;
+    CachedSrcFormat := Frame.format;
+    CachedDstFormat := DstFormat;
+  end;
+
+  if not Assigned(ScaleContext) then
+    raise EFFmpegDecoder.Create('sws_getContext failed.');
+
+  if TFFmpegApi.sws_scale(PSwsContext(ScaleContext), @Frame.data[0], @Frame.linesize[0], 0,
+    Frame.height, @DstData[0], @DstLinesize[0]) <= 0 then
+    raise EFFmpegDecoder.Create('sws_scale failed.');
+end;
+
 // AVFrameをBGRのTBitmapへ変換する
 procedure CopyFrameToBitmap(Frame: PAVFrame; Bitmap: TBitmap);
 var
@@ -605,6 +688,16 @@ var
   SwrContext: PSwrContext;
 begin
   StopAudioPlayback;
+
+  if FDirectSwsContext <> nil then
+  begin
+    TFFmpegApi.sws_freeContext(PSwsContext(FDirectSwsContext));
+    FDirectSwsContext := nil;
+  end;
+  FDirectSwsSrcWidth := 0;
+  FDirectSwsSrcHeight := 0;
+  FDirectSwsSrcFormat := 0;
+  FDirectSwsDstFormat := 0;
 
   Packet := PAVPacket(FPacket);
   if Assigned(Packet) then
@@ -1068,8 +1161,81 @@ begin
         begin
           if (Frame.pts = AV_NOPTS_VALUE) or (Frame.pts >= TargetTs) then
           begin
-            // 純粋な映像デコード負荷の切り分け用。BGR変換とTBitmap書き込みを止める。
-            // CopyFrameToBitmap(Frame, Bitmap);
+            CopyFrameToBitmap(Frame, Bitmap);
+            Stopwatch.Stop;
+            UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+            Result := True;
+            Exit;
+          end;
+        end;
+      finally
+        TFFmpegApi.av_packet_unref(Packet);
+      end;
+    end;
+
+    ErrorMessage := 'Frame could not be decoded.';
+  except
+    on E: Exception do
+      ErrorMessage := E.ClassName + ': ' + E.Message;
+  end;
+end;
+
+// 指定ミリ秒位置へシークしてフレームを32bit BGRxバッファへ直接変換する
+function TFFmpegDecoder.DecodeFrameToBgrx32(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+var
+  FormatContext: PAVFormatContext;
+  CodecContext: PAVCodecContext;
+  Packet: PAVPacket;
+  Frame: PAVFrame;
+  Stream: PAVStream;
+  Ret: Integer;
+  TargetTs: Int64;
+  Stopwatch: TStopwatch;
+begin
+  ErrorMessage := '';
+  Result := False;
+
+  FormatContext := PAVFormatContext(FFormatContext);
+  CodecContext := PAVCodecContext(FCodecContext);
+  Packet := PAVPacket(FPacket);
+  Frame := PAVFrame(FFrame);
+  Stream := PAVStream(FStream);
+
+  if (FormatContext = nil) or (CodecContext = nil) or (Packet = nil) or (Frame = nil) or (Stream = nil) then
+  begin
+    ErrorMessage := 'Decoder is not open.';
+    Exit;
+  end;
+
+  try
+    TargetTs := StreamTimestampFromMs(Stream, PositionMs);
+    Ret := TFFmpegApi.av_seek_frame(FormatContext, FStreamIndex, TargetTs, AVSEEK_FLAG_BACKWARD);
+    if Ret < 0 then
+    begin
+      ErrorMessage := TFFmpegApi.ErrorText(Ret);
+      Exit;
+    end;
+    TFFmpegApi.avcodec_flush_buffers(CodecContext);
+    if FAudioCodecContext <> nil then
+      TFFmpegApi.avcodec_flush_buffers(PAVCodecContext(FAudioCodecContext));
+
+    while TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0 do
+    begin
+      try
+        if Packet.stream_index <> FStreamIndex then
+          Continue;
+
+        Stopwatch := TStopwatch.StartNew;
+        Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
+        if Ret < 0 then
+          Continue;
+
+        while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
+        begin
+          if (Frame.pts = AV_NOPTS_VALUE) or (Frame.pts >= TargetTs) then
+          begin
+            CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
+              FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
             Stopwatch.Stop;
             UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
             Result := True;
@@ -1135,8 +1301,86 @@ begin
 
         while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
         begin
-          // 純粋な映像デコード負荷の切り分け用。BGR変換とTBitmap書き込みを止める。
-          // CopyFrameToBitmap(Frame, Bitmap);
+          CopyFrameToBitmap(Frame, Bitmap);
+          Stopwatch.Stop;
+          UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+          PositionMs := StreamTimestampToMs(Stream, Frame.pts);
+          Result := True;
+          Exit;
+        end;
+      finally
+        TFFmpegApi.av_packet_unref(Packet);
+      end;
+    end;
+
+    ErrorMessage := 'End of stream.';
+  except
+    on E: Exception do
+      ErrorMessage := E.ClassName + ': ' + E.Message;
+  end;
+end;
+
+// 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
+function TFFmpegDecoder.DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+var
+  FormatContext: PAVFormatContext;
+  CodecContext: PAVCodecContext;
+  Packet: PAVPacket;
+  Frame: PAVFrame;
+  Stream: PAVStream;
+  Ret: Integer;
+  Stopwatch: TStopwatch;
+begin
+  ErrorMessage := '';
+  PositionMs := -1;
+  Result := False;
+
+  FormatContext := PAVFormatContext(FFormatContext);
+  CodecContext := PAVCodecContext(FCodecContext);
+  Packet := PAVPacket(FPacket);
+  Frame := PAVFrame(FFrame);
+  Stream := PAVStream(FStream);
+
+  if (FormatContext = nil) or (CodecContext = nil) or (Packet = nil) or (Frame = nil) or (Stream = nil) then
+  begin
+    ErrorMessage := 'Decoder is not open.';
+    Exit;
+  end;
+
+  try
+    Stopwatch := TStopwatch.StartNew;
+    if TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 then
+    begin
+      CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
+        FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+      Stopwatch.Stop;
+      UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+      PositionMs := StreamTimestampToMs(Stream, Frame.pts);
+      Result := True;
+      Exit;
+    end;
+
+    while TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0 do
+    begin
+      try
+        if Packet.stream_index = FAudioStreamIndex then
+        begin
+          DecodeAudioPacket(Packet);
+          Continue;
+        end;
+
+        if Packet.stream_index <> FStreamIndex then
+          Continue;
+
+        Stopwatch := TStopwatch.StartNew;
+        Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
+        if Ret < 0 then
+          Continue;
+
+        while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
+        begin
+          CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
+            FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
           Stopwatch.Stop;
           UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
           PositionMs := StreamTimestampToMs(Stream, Frame.pts);
@@ -1347,7 +1591,3 @@ begin
 end;
 
 end.
-
-
-
-
