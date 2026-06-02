@@ -42,20 +42,23 @@ FFmpeg 8.1 系 DLL を利用して、動画ファイルと音声ファイルを 
 
 ## インストール
 
-リリース zip `VW_Media_Input.zip` を展開し、含まれている `VW_Media_Input` フォルダを AviUtl2 の `Plugin` フォルダへ配置してください。
+リリース zip `VW_Media_Input.zip` を展開し、含まれている `VW_Media_Input` フォルダを次の場所へ配置してください。
+
+```text
+C:\ProgramData\aviutl2\Plugin\VW_Media_Input
+```
 
 配置例:
 
 ```text
-AviUtl2
-└─ Plugin
-   └─ VW_Media_Input
-      ├─ VW_Media_Input.aui2
-      ├─ avcodec-62.dll
-      ├─ avformat-62.dll
-      ├─ avutil-60.dll
-      ├─ swresample-6.dll
-      └─ swscale-9.dll
+C:\ProgramData\aviutl2\Plugin
+└─ VW_Media_Input
+   ├─ VW_Media_Input.aui2
+   ├─ avcodec-62.dll
+   ├─ avformat-62.dll
+   ├─ avutil-60.dll
+   ├─ swresample-6.dll
+   └─ swscale-9.dll
 ```
 
 ## ライセンス

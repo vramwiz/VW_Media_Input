@@ -299,7 +299,7 @@ zip 内容:
 
 - zip は `VW_Media_Input` フォルダごと含めている。
 - zip ファイル名は日付を付けず、常に `VW_Media_Input.zip` とする。
-- 展開先は AviUtl2 の `Plugin` 配下を想定する。
+- 展開先は `C:\ProgramData\aviutl2\Plugin\VW_Media_Input` を想定する。
 - zip の配置場所は `releases` ではなく `Setup` フォルダとする。
 - 現時点の zip は Debug ビルド由来。正式配布時は Release ビルドで作り直すか検討する。
 
