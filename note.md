@@ -274,7 +274,11 @@ zip 作成処理は `Setup\make_release_zip.bat` にバッチ化した。
 
 作成先:
 
-- `D:\DelphiProg\test\VW_Media_Input\Setup\VW_Media_Input_2026-06-02_win64_debug.zip`
+- `D:\DelphiProg\test\VW_Media_Input\Setup\VW_Media_Input.zip`
+
+GitHub Releases:
+
+- `https://github.com/vramwiz/VW_Media_Input/releases/tag/v1.0.0`
 
 作成コマンド:
 
@@ -294,6 +298,7 @@ zip 内容:
 メモ:
 
 - zip は `VW_Media_Input` フォルダごと含めている。
+- zip ファイル名は日付を付けず、常に `VW_Media_Input.zip` とする。
 - 展開先は AviUtl2 の `Plugin` 配下を想定する。
 - zip の配置場所は `releases` ではなく `Setup` フォルダとする。
 - 現時点の zip は Debug ビルド由来。正式配布時は Release ビルドで作り直すか検討する。
