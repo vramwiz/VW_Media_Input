@@ -1,4 +1,4 @@
-# VW_Media_Input 引き継ぎメモ
+﻿# VW_Media_Input 引き継ぎメモ
 
 ## 目的
 
@@ -205,3 +205,48 @@ wav について:
 - AviUtl2 側の都合は `PluginInputBase.pas` / `PluginAudioInputReader.pas` に寄せる。
 - 変換、統計、ストリーム情報などの純粋な補助処理は `Plugin_Input\FFmpeg*.pas` へ分ける。
 - 新しくまとまった責務が増えた場合は、ルートではなく `Plugin_Input` 配下へ新規ユニットを作る。
+
+## 2026-06-02 mp3 対応状況
+
+mp3 対応の入口を追加した。
+
+変更内容:
+
+- `VW_Media_Input.dpr`
+  - プラグイン名を `動画/音声入力` に変更。
+  - ファイルフィルターに `*.mp3` を追加。
+  - 情報文言を動画/音声向けに変更。
+- `Plugin_Input\FFmpegDecoder.pas`
+  - 映像ストリームが無いファイルでも、音声ストリームが開ければ `Open` 成功にするよう変更。
+  - mp3 のような音声専用入力では、映像デコーダを作らず音声デコーダだけを開く。
+- `Plugin_Input\PluginInputBase.pas`
+  - `HasVideo` を追加。
+  - 音声専用ファイルでは `INPUT_INFO_FLAG_VIDEO` と `BITMAPINFOHEADER` を返さず、`INPUT_INFO_FLAG_AUDIO` / `audio_format` / `audio_n` だけ返す。
+  - `PluginInputReadVideo` は映像が無い場合 `0` を返す。
+  - `PluginInputReadAudio` は既存の `TPluginAudioInputReader` 経由で PCM16 stereo 48kHz を返す。
+
+ビルド確認:
+
+```powershell
+cmd.exe /s /c '"C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && MSBuild.exe VW_Media_Input.dproj /t:Build /p:Config=Debug /p:Platform=Win64'
+```
+
+結果:
+
+- Win64 Debug ビルド成功。
+- 警告 0。
+- エラー 0。
+- post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.aui2` と FFmpeg DLL を配置済み。
+
+動作確認メモ:
+
+- スピーカーが無いため、実際に音が鳴るかの聴感確認は未実施。
+- ただし AviUtl2 上では問題ないように見える。
+- 現時点では「mp3 を音声専用入力として開き、音声情報と PCM 読み出し経路を返す」ところまで対応済みと見る。
+
+今後確認したいこと:
+
+- スピーカーまたは波形/メーターで、実際に音声が正しく読めているか確認する。
+- 長い mp3 でシークやランダムアクセス要求が来た場合の挙動を確認する。
+- 必要なら `func_read_audio` の要求位置が戻るケースに備えて、音声デコードキャッシュ/再オープン/シーク対応を強化する。
+

@@ -298,6 +298,7 @@ var
   Stream: PAVStream; // 対象の映像ストリーム
   AudioStream: PAVStream; // 対象の音声ストリーム
   CodecPar: PAVCodecParameters; // 映像ストリームのコーデック情報
+  HasVideoStream: Boolean; // 映像ストリームがあるかどうか
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
@@ -331,78 +332,94 @@ begin
       Exit;
     end;
 
-    StreamIndex := TFFmpegApi.av_find_best_stream(FormatContext, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0);
-    if StreamIndex < 0 then
-    begin
-      ErrorMessage := TFFmpegApi.ErrorText(StreamIndex);
-      Exit;
-    end;
-
-    Stream := StreamAt(FormatContext, StreamIndex);
-    if not Assigned(Stream) then
-    begin
-      ErrorMessage := 'Video stream pointer is nil.';
-      Exit;
-    end;
-
-    CodecPar := Stream.codecpar;
-    if not Assigned(CodecPar) then
-    begin
-      ErrorMessage := 'Codec parameters pointer is nil.';
-      Exit;
-    end;
-
-    Codec := TFFmpegApi.avcodec_find_decoder(CodecPar.codec_id);
-    if not Assigned(Codec) then
-    begin
-      ErrorMessage := 'Decoder was not found.';
-      Exit;
-    end;
-
-    CodecContext := TFFmpegApi.avcodec_alloc_context3(Codec);
-    if not Assigned(CodecContext) then
-    begin
-      ErrorMessage := 'avcodec_alloc_context3 failed.';
-      Exit;
-    end;
-
-    Ret := TFFmpegApi.avcodec_parameters_to_context(CodecContext, CodecPar);
-    if Ret < 0 then
-    begin
-      ErrorMessage := TFFmpegApi.ErrorText(Ret);
-      Exit;
-    end;
-
-    Ret := TFFmpegApi.avcodec_open2(CodecContext, Codec, nil);
-    if Ret < 0 then
-    begin
-      ErrorMessage := TFFmpegApi.ErrorText(Ret);
-      Exit;
-    end;
-
-    Packet := TFFmpegApi.av_packet_alloc();
-    Frame := TFFmpegApi.av_frame_alloc();
-    if (Packet = nil) or (Frame = nil) then
-    begin
-      ErrorMessage := 'Failed to allocate packet or frame.';
-      Exit;
-    end;
-
     if FormatContext.duration > 0 then
       Info.DurationSec := FormatContext.duration / AV_TIME_BASE;
-    Info.Width := CodecPar.width;
-    Info.Height := CodecPar.height;
-    Info.FpsText := RationalToText(Stream.avg_frame_rate);
-    Info.Fps := RationalToDouble(Stream.avg_frame_rate);
     ReadAudioInfo(FormatContext, Info);
 
-    if (Info.Width <= 0) or (Info.Height <= 0) then
+    StreamIndex := TFFmpegApi.av_find_best_stream(FormatContext, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0);
+    HasVideoStream := StreamIndex >= 0;
+    Stream := nil;
+    if HasVideoStream then
     begin
-      ErrorMessage := 'Video stream was found, but size could not be read.';
+      Stream := StreamAt(FormatContext, StreamIndex);
+      if not Assigned(Stream) then
+      begin
+        ErrorMessage := 'Video stream pointer is nil.';
+        Exit;
+      end;
+
+      CodecPar := Stream.codecpar;
+      if not Assigned(CodecPar) then
+      begin
+        ErrorMessage := 'Codec parameters pointer is nil.';
+        Exit;
+      end;
+
+      Codec := TFFmpegApi.avcodec_find_decoder(CodecPar.codec_id);
+      if not Assigned(Codec) then
+      begin
+        ErrorMessage := 'Decoder was not found.';
+        Exit;
+      end;
+
+      CodecContext := TFFmpegApi.avcodec_alloc_context3(Codec);
+      if not Assigned(CodecContext) then
+      begin
+        ErrorMessage := 'avcodec_alloc_context3 failed.';
+        Exit;
+      end;
+
+      Ret := TFFmpegApi.avcodec_parameters_to_context(CodecContext, CodecPar);
+      if Ret < 0 then
+      begin
+        ErrorMessage := TFFmpegApi.ErrorText(Ret);
+        Exit;
+      end;
+
+      Ret := TFFmpegApi.avcodec_open2(CodecContext, Codec, nil);
+      if Ret < 0 then
+      begin
+        ErrorMessage := TFFmpegApi.ErrorText(Ret);
+        Exit;
+      end;
+
+      Frame := TFFmpegApi.av_frame_alloc();
+      if Frame = nil then
+      begin
+        ErrorMessage := 'Failed to allocate video frame.';
+        Exit;
+      end;
+
+      Info.Width := CodecPar.width;
+      Info.Height := CodecPar.height;
+      Info.FpsText := RationalToText(Stream.avg_frame_rate);
+      Info.Fps := RationalToDouble(Stream.avg_frame_rate);
+
+      if (Info.Width <= 0) or (Info.Height <= 0) then
+      begin
+        ErrorMessage := 'Video stream was found, but size could not be read.';
+        Exit;
+      end;
+    end
+    else if not Info.Audio.Present then
+    begin
+      ErrorMessage := 'No supported video or audio stream was found.';
       Exit;
     end;
 
     OpenAudioDecoder(FormatContext, Info, AudioCodecContext, AudioStream, AudioStreamIndex, AudioFrame, SwrContext);
+    if (not HasVideoStream) and ((not Info.Audio.Present) or (Info.Audio.OpenError <> '')) then
+    begin
+      ErrorMessage := 'Audio decoder is not open. ' + Info.Audio.OpenError;
+      Exit;
+    end;
+
+    Packet := TFFmpegApi.av_packet_alloc();
+    if Packet = nil then
+    begin
+      ErrorMessage := 'Failed to allocate packet.';
+      Exit;
+    end;
 
     FFileName := FileName;
     FFormatContext := FormatContext;

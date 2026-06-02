@@ -69,10 +69,10 @@ end;
 var
   Plugin: TInputPluginTable = (
     flag: INPUT_PLUGIN_FLAG_VIDEO or INPUT_PLUGIN_FLAG_AUDIO;
-    name: '動画入力';
-    filefilter: 'Video files (*.mp4;*.mov;*.mkv;*.avi)'#0'*.mp4;*.mov;*.mkv;*.avi'#0;
+    name: '動画/音声入力';
+    filefilter: 'Media files (*.mp4;*.mov;*.mkv;*.avi;*.mp3)'#0'*.mp4;*.mov;*.mkv;*.avi;*.mp3'#0;
     //filefilter: nil;
-    information: '様々な動画形式をAviUtl2上で扱うための軽量プラグイン';
+    information: '様々な動画/音声形式をAviUtl2上で扱うための軽量プラグイン';
     func_open: func_open;
     func_close: func_close;
     func_info_get: func_info_get;

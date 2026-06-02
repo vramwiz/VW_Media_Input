@@ -32,6 +32,7 @@ type
   TFileContext = record
     Decoder: TFFmpegDecoder; // 映像読み取り用のFFmpegデコーダ
     FileName: string; // 開いている入力ファイル名
+    HasVideo: Boolean; // 映像ストリームをAviUtl2へ返せるか
     Width: Integer; // 映像の幅
     Height: Integer; // 映像の高さ
     DurationSec: Double; // 入力ファイルの長さ
@@ -94,13 +95,12 @@ begin
   Scale := Scale div Divisor;
 end;
 
-// AviUtl2から渡されたファイルを開き、入力ハンドルを返す。
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
 var
-  Ctx: PFileContext; // 新しく作成する入力ハンドル用状態
-  VideoInfo: TVideoInfo; // FFmpegから取得した動画情報
-  ErrorMessage: string; // 映像open時のエラーメッセージ
-  AudioErrorMessage: string; // 音声open時のエラーメッセージ
+  Ctx: PFileContext;
+  VideoInfo: TVideoInfo;
+  ErrorMessage: string;
+  AudioErrorMessage: string;
 begin
   Result := nil;
   AudioErrorMessage := '';
@@ -114,23 +114,27 @@ begin
 
     if Ctx^.Decoder.Open(Ctx^.FileName, VideoInfo, ErrorMessage) then
     begin
+      Ctx^.HasVideo := (VideoInfo.Width > 0) and (VideoInfo.Height > 0);
       Ctx^.Width := VideoInfo.Width;
       Ctx^.Height := VideoInfo.Height;
       Ctx^.DurationSec := VideoInfo.DurationSec;
       FpsToRateScale(VideoInfo.Fps, Ctx^.Rate, Ctx^.Scale);
 
-      if Ctx^.DurationSec > 0 then
+      if Ctx^.HasVideo and (Ctx^.DurationSec > 0) then
         Ctx^.FrameCount := Max(1, Ceil(Ctx^.DurationSec * Ctx^.Rate / Ctx^.Scale))
-      else
+      else if Ctx^.HasVideo then
         Ctx^.FrameCount := 1;
 
-      Ctx^.Info.biSize := SizeOf(BITMAPINFOHEADER);
-      Ctx^.Info.biWidth := Ctx^.Width;
-      Ctx^.Info.biHeight := Ctx^.Height;
-      Ctx^.Info.biPlanes := 1;
-      Ctx^.Info.biBitCount := 32;
-      Ctx^.Info.biCompression := BI_RGB;
-      Ctx^.Info.biSizeImage := Ctx^.Width * Ctx^.Height * 4;
+      if Ctx^.HasVideo then
+      begin
+        Ctx^.Info.biSize := SizeOf(BITMAPINFOHEADER);
+        Ctx^.Info.biWidth := Ctx^.Width;
+        Ctx^.Info.biHeight := Ctx^.Height;
+        Ctx^.Info.biPlanes := 1;
+        Ctx^.Info.biBitCount := 32;
+        Ctx^.Info.biCompression := BI_RGB;
+        Ctx^.Info.biSizeImage := Ctx^.Width * Ctx^.Height * 4;
+      end;
 
       if VideoInfo.Audio.Present then
       begin
@@ -157,7 +161,6 @@ begin
   FreeFileContext(Ctx);
 end;
 
-// 入力ハンドルに紐づくデコーダとキャッシュを閉じる。
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
 begin
   Result := False;
@@ -168,10 +171,9 @@ begin
   Result := True;
 end;
 
-// AviUtl2へ動画/音声の入力情報を返す。
 function PluginInputGetInfo(ih: INPUT_HANDLE; info: PInputInfo): BOOL;
 var
-  Ctx: PFileContext; // AviUtl2から渡された入力ハンドルの状態
+  Ctx: PFileContext;
 begin
   Result := False;
   if (ih = nil) or (info = nil) then
@@ -179,39 +181,42 @@ begin
 
   Ctx := PFileContext(ih);
   FillChar(info^, SizeOf(TInputInfo), 0);
-  info^.flag := INPUT_INFO_FLAG_VIDEO;
+  if Ctx^.HasVideo then
+    info^.flag := INPUT_INFO_FLAG_VIDEO;
   if (Ctx^.AudioInput <> nil) and Ctx^.AudioInput.HasAudio then
     info^.flag := info^.flag or INPUT_INFO_FLAG_AUDIO;
   info^.rate := Ctx^.Rate;
   info^.scale := Ctx^.Scale;
   info^.n := Ctx^.FrameCount;
-  info^.format := @Ctx^.Info;
-  info^.format_size := SizeOf(BITMAPINFOHEADER);
+  if Ctx^.HasVideo then
+  begin
+    info^.format := @Ctx^.Info;
+    info^.format_size := SizeOf(BITMAPINFOHEADER);
+  end;
   if (info^.flag and INPUT_INFO_FLAG_AUDIO) <> 0 then
   begin
     info^.audio_n := Ctx^.AudioInput.SampleCount;
     info^.audio_format := Ctx^.AudioInput.FormatPtr;
     info^.audio_format_size := SizeOf(WAVEFORMATEX);
   end;
-  Result := True;
+  Result := info^.flag <> 0;
 end;
 
-// 指定フレームの映像をAviUtl2のバッファへ読み込む。
 function PluginInputReadVideo(ih: INPUT_HANDLE; frame: Integer; buf: Pointer): Integer;
 var
-  Ctx: PFileContext; // AviUtl2から渡された入力ハンドルの状態
-  PositionMs: Integer; // ランダムアクセス時に要求する再生位置
-  PositionMsOut: Integer; // 順方向デコード時にデコーダから返る再生位置
-  ErrorMessage: string; // 映像デコード時のエラーメッセージ
-  ImageSize: Integer; // 1フレーム分のバイト数
-  Decoded: Boolean; // 映像デコードが成功したか
+  Ctx: PFileContext;
+  PositionMs: Integer;
+  PositionMsOut: Integer;
+  ErrorMessage: string;
+  ImageSize: Integer;
+  Decoded: Boolean;
 begin
   Result := 0;
   if (ih = nil) or (buf = nil) then
     Exit;
 
   Ctx := PFileContext(ih);
-  if Ctx^.Decoder = nil then
+  if (Ctx^.Decoder = nil) or (not Ctx^.HasVideo) then
     Exit;
 
   if frame < 0 then
@@ -246,10 +251,9 @@ begin
   Result := ImageSize;
 end;
 
-// 指定範囲の音声サンプルをAviUtl2のバッファへ読み込む。
 function PluginInputReadAudio(ih: INPUT_HANDLE; start, sampleLength: Integer; buf: Pointer): Integer;
 var
-  Ctx: PFileContext; // AviUtl2から渡された入力ハンドルの状態
+  Ctx: PFileContext;
 begin
   Result := 0;
   if (ih = nil) or (buf = nil) or (sampleLength <= 0) then
@@ -262,10 +266,9 @@ begin
   Result := Ctx^.AudioInput.ReadAudio(start, sampleLength, buf);
 end;
 
-// 入力プラグインの設定ダイアログを表示する。
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 begin
-  MessageBox(hwnd, 'VW_Media_Input FFmpeg video input', 'VW_Media_Input', MB_OK);
+  MessageBox(hwnd, 'VW_Media_Input FFmpeg media input', 'VW_Media_Input', MB_OK);
   Result := True;
 end;
 
