@@ -1,20 +1,24 @@
 unit FFmpegStreamInfo;
 
+// FFmpegの入力コンテキストからストリーム情報を読み取る補助ユニット。
+// デコーダ本体へ渡すTVideoInfoに音声ストリームの基本情報を反映する。
+
 interface
 
 uses
   FFmpegApi, FFmpegDecoderTypes;
 
+// 入力ファイル内の音声ストリーム情報をTVideoInfoへ読み込む。
 procedure ReadAudioInfo(FormatContext: PAVFormatContext; var Info: TVideoInfo);
 
 implementation
 
-// 音声ストリームの基本情報を読む
+// 入力ファイル内の音声ストリーム情報をTVideoInfoへ読み込む。
 procedure ReadAudioInfo(FormatContext: PAVFormatContext; var Info: TVideoInfo);
 var
-  StreamIndex: Integer;
-  Stream: PAVStream;
-  CodecPar: PAVCodecParameters;
+  StreamIndex: Integer; // FFmpegが選んだ最適な音声ストリーム番号
+  Stream: PAVStream; // 対象の音声ストリーム
+  CodecPar: PAVCodecParameters; // 音声ストリームのコーデック情報
 begin
   StreamIndex := TFFmpegApi.av_find_best_stream(FormatContext, AVMEDIA_TYPE_AUDIO, -1, -1, nil, 0);
   if StreamIndex < 0 then

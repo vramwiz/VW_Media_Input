@@ -136,12 +136,6 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
         <DCCReference Include="Plugin_Input\PluginInputBase.pas"/>
-        <DCCReference Include="AviUtl\Render\AviUtl2Render.pas"/>
-        <DCCReference Include="Lib\RTTIPersistent\RTTIPersistent.pas"/>
-        <DCCReference Include="Lib\SectionFileManager\SectionFileManager.pas"/>
-        <DCCReference Include="Lib\TextEncoding\TextEncodingUtils.pas"/>
-        <DCCReference Include="AviUtl\SharedMemory\SharedMemoryManager.pas"/>
-        <DCCReference Include="Lib\SharedMemory\SharedMemoryBase.pas"/>
         <DCCReference Include="AviUtl\Input\AviUtl2InputTypes.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegApi.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecoderTypes.pas"/>

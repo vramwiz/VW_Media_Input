@@ -1,10 +1,14 @@
-unit FFmpegAudioOpen;
+﻿unit FFmpegAudioOpen;
+
+// 動画ファイル内の音声ストリームをFFmpegで開くための補助ユニット。
+// 音声デコーダ、音声フレーム、PCM変換用swrコンテキストの準備を担当する。
 
 interface
 
 uses
   FFmpegApi, FFmpegDecoderTypes;
 
+// 音声ストリームが存在する場合に音声デコーダとPCM変換コンテキストを開く。
 procedure OpenAudioDecoder(FormatContext: PAVFormatContext; var Info: TVideoInfo;
   out AudioCodecContext: PAVCodecContext; out AudioStream: PAVStream;
   out AudioStreamIndex: Integer; out AudioFrame: PAVFrame; out SwrContext: PSwrContext);
@@ -14,6 +18,7 @@ implementation
 uses
   System.SysUtils;
 
+// 音声open途中で確保したリソースをまとめて解放する。
 procedure ReleaseAudioOpenResources(var AudioCodecContext: PAVCodecContext; var AudioFrame: PAVFrame;
   var SwrContext: PSwrContext);
 begin
@@ -36,12 +41,13 @@ begin
   end;
 end;
 
+// 入力音声をPCM16 stereo 48kHzへ変換するswrコンテキストを準備する。
 function PrepareAudioResampler(AudioCodecPar: PAVCodecParameters; out SwrContext: PSwrContext;
   out ErrorMessage: string): Boolean;
 var
-  InLayout: TAVChannelLayout;
-  OutLayout: TAVChannelLayout;
-  Ret: Integer;
+  InLayout: TAVChannelLayout; // 入力音声のチャンネルレイアウト
+  OutLayout: TAVChannelLayout; // 出力PCMのチャンネルレイアウト
+  Ret: Integer; // FFmpeg APIの戻り値
 begin
   Result := False;
   SwrContext := nil;
@@ -93,13 +99,14 @@ begin
   end;
 end;
 
+// 音声ストリームが存在する場合に音声デコーダとPCM変換コンテキストを開く。
 procedure OpenAudioDecoder(FormatContext: PAVFormatContext; var Info: TVideoInfo;
   out AudioCodecContext: PAVCodecContext; out AudioStream: PAVStream;
   out AudioStreamIndex: Integer; out AudioFrame: PAVFrame; out SwrContext: PSwrContext);
 var
-  AudioCodec: PAVCodec;
-  AudioCodecPar: PAVCodecParameters;
-  Ret: Integer;
+  AudioCodec: PAVCodec; // 音声ストリームに対応するFFmpegデコーダ
+  AudioCodecPar: PAVCodecParameters; // 音声ストリームのコーデック情報
+  Ret: Integer; // FFmpeg APIの戻り値
 begin
   AudioCodecContext := nil;
   AudioStream := nil;

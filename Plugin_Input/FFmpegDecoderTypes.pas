@@ -1,5 +1,8 @@
 unit FFmpegDecoderTypes;
 
+// FFmpegデコーダとAviUtl2入力処理で共有する公開情報と統計用の型定義ユニット。
+// デコード本体、音声読み取り、統計計算の間で受け渡すrecordをここに集約する。
+
 interface
 
 uses
@@ -7,12 +10,14 @@ uses
 
 type
   PAudioWaveBuffer = ^TAudioWaveBuffer;
+  // waveOutへ渡して再生完了を待つPCMバッファ情報。
   TAudioWaveBuffer = record
-    Header: TWaveHdr;
-    Data: Pointer;
-    Size: Integer;
+    Header: TWaveHdr; // waveOutへ渡すWAVEHDR
+    Data: Pointer; // PCMデータ本体
+    Size: Integer; // PCMデータのバイト数
   end;
 
+  // デバッグ用音声再生とPCM確認の統計情報。
   TAudioPlaybackStats = record
     AudioPackets: Int64; // 読み込んだ音声パケット数
     DecodedFrames: Int64; // デコード済み音声フレーム数
@@ -26,6 +31,7 @@ type
     ConvertErrors: Int64; // swr_convertの失敗回数
   end;
 
+  // 映像/音声デコード処理の負荷統計情報。
   TDecodeLoadStats = record
     VideoLastMs: Double; // 直近の映像デコード+色変換時間
     VideoAverageMs: Double; // 映像デコード+色変換時間の移動平均
@@ -37,6 +43,7 @@ type
     AudioPackets: Int64; // 測定した音声パケット数
   end;
 
+  // 入力ファイル内の音声ストリーム基本情報。
   TAudioInfo = record
     Present: Boolean; // 音声ストリームが見つかったか
     StreamIndex: Integer; // 対象の音声ストリーム番号
@@ -48,6 +55,7 @@ type
     OpenError: string; // 音声デコーダ準備時の診断メッセージ
   end;
 
+  // 入力ファイル内の映像ストリーム基本情報。
   TVideoInfo = record
     Width: Integer; // 動画の幅
     Height: Integer; // 動画の高さ

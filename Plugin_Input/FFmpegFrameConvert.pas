@@ -1,10 +1,14 @@
 unit FFmpegFrameConvert;
 
+// FFmpegの映像フレームをAviUtl2向けの生バッファや確認用Bitmapへ変換する補助ユニット。
+// sws_scaleによるピクセル形式変換と上下方向の配置調整を担当する。
+
 interface
 
 uses
   Vcl.Graphics, FFmpegApi;
 
+// AVFrameを32bit BGRxの呼び出し元バッファへ直接変換する。
 procedure CopyFrameToBgrx32Buffer(
   Frame: PAVFrame;
   Buffer: Pointer;
@@ -15,6 +19,7 @@ procedure CopyFrameToBgrx32Buffer(
   var CachedSrcFormat: Integer;
   var CachedDstFormat: Integer
 );
+// AVFrameを確認用のBGR TBitmapへ変換する。
 procedure CopyFrameToBitmap(Frame: PAVFrame; Bitmap: TBitmap);
 
 implementation
@@ -22,7 +27,7 @@ implementation
 uses
   System.SysUtils;
 
-// AVFrameを32bit BGRxの呼び出し元バッファへ直接変換する
+// AVFrameを32bit BGRxの呼び出し元バッファへ直接変換する。
 procedure CopyFrameToBgrx32Buffer(
   Frame: PAVFrame;
   Buffer: Pointer;
@@ -34,9 +39,9 @@ procedure CopyFrameToBgrx32Buffer(
   var CachedDstFormat: Integer
 );
 var
-  DstData: array[0..3] of PByte;
-  DstLinesize: array[0..3] of Integer;
-  DstFormat: Integer;
+  DstData: array[0..3] of PByte; // sws_scaleへ渡す出力プレーンポインタ
+  DstLinesize: array[0..3] of Integer; // sws_scaleへ渡す出力ラインサイズ
+  DstFormat: Integer; // AviUtl2へ返す出力ピクセル形式
 begin
   if (Frame = nil) or (Frame.width <= 0) or (Frame.height <= 0) then
     raise Exception.Create('Decoded frame has invalid size.');
@@ -80,13 +85,13 @@ begin
     raise Exception.Create('sws_scale failed.');
 end;
 
-// AVFrameをBGRのTBitmapへ変換する
+// AVFrameを確認用のBGR TBitmapへ変換する。
 procedure CopyFrameToBitmap(Frame: PAVFrame; Bitmap: TBitmap);
 var
-  ScaleContext: PSwsContext;
-  DstData: array[0..3] of PByte;
-  DstLinesize: array[0..3] of Integer;
-  Stride: NativeInt;
+  ScaleContext: PSwsContext; // この変換だけで使うswsコンテキスト
+  DstData: array[0..3] of PByte; // sws_scaleへ渡すBitmap側の出力ポインタ
+  DstLinesize: array[0..3] of Integer; // Bitmap側の1行あたりバイト数
+  Stride: NativeInt; // BitmapのScanLine間隔
 begin
   if (Frame = nil) or (Frame.width <= 0) or (Frame.height <= 0) then
     raise Exception.Create('Decoded frame has invalid size.');

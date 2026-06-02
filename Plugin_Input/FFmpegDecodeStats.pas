@@ -1,12 +1,18 @@
 unit FFmpegDecodeStats;
 
+// FFmpegデコード処理の負荷統計と音声PCMの確認用統計を更新する補助ユニット。
+// デコーダ本体が持つ統計recordの計算処理をここへ集約する。
+
 interface
 
 uses
   System.SysUtils, FFmpegDecoderTypes;
 
+// 映像デコードと色変換にかかった時間の統計を更新する。
 procedure UpdateVideoLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
+// 音声パケット処理にかかった時間の統計を更新する。
 procedure UpdateAudioLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
+// PCMデータから音量確認用の統計を更新する。
 procedure UpdateAudioPlaybackStats(var Stats: TAudioPlaybackStats; const Pcm: TBytes;
   SampleCount: Integer; PtsMs: Integer; QueuedBuffers: Integer);
 
@@ -15,6 +21,7 @@ implementation
 uses
   System.Math;
 
+// 映像デコードと色変換にかかった時間の統計を更新する。
 procedure UpdateVideoLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
 begin
   Stats.VideoLastMs := ElapsedMs;
@@ -27,6 +34,7 @@ begin
   Inc(Stats.VideoFrames);
 end;
 
+// 音声パケット処理にかかった時間の統計を更新する。
 procedure UpdateAudioLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
 begin
   Stats.AudioLastMs := ElapsedMs;
@@ -39,16 +47,17 @@ begin
   Inc(Stats.AudioPackets);
 end;
 
+// PCMデータから音量確認用の統計を更新する。
 procedure UpdateAudioPlaybackStats(var Stats: TAudioPlaybackStats; const Pcm: TBytes;
   SampleCount: Integer; PtsMs: Integer; QueuedBuffers: Integer);
 var
-  I: Integer;
-  Value: SmallInt;
-  AbsValue: Integer;
-  Peak: Integer;
-  NonZero: Integer;
-  SumSquares: Double;
-  TotalValues: Integer;
+  I: Integer; // PCMサンプル走査用のインデックス
+  Value: SmallInt; // 現在確認中の16bit PCM値
+  AbsValue: Integer; // PCM値の絶対値
+  Peak: Integer; // このPCMブロック内の最大振幅
+  NonZero: Integer; // 0以外のPCM値の個数
+  SumSquares: Double; // RMS計算用の二乗和
+  TotalValues: Integer; // PCM値の総数
 begin
   TotalValues := Length(Pcm) div SizeOf(SmallInt);
   if TotalValues <= 0 then

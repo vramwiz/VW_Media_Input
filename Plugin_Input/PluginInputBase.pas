@@ -1,15 +1,24 @@
 unit PluginInputBase;
 
+// AviUtl2入力プラグインとして公開する処理本体ユニット。
+// ファイルopen/close、情報取得、映像フレーム読み込み、音声読み込みを各デコーダへ橋渡しする。
+
 interface
 
 uses
   Winapi.Windows, System.SysUtils, AviUtl2InputTypes;
 
+// AviUtl2から渡されたファイルを開き、入力ハンドルを返す。
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
+// 入力ハンドルに紐づくデコーダとキャッシュを閉じる。
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
+// AviUtl2へ動画/音声の入力情報を返す。
 function PluginInputGetInfo(ih: INPUT_HANDLE; info: PInputInfo): BOOL;
+// 指定フレームの映像をAviUtl2のバッファへ読み込む。
 function PluginInputReadVideo(ih: INPUT_HANDLE; frame: Integer; buf: Pointer): Integer;
+// 指定範囲の音声サンプルをAviUtl2のバッファへ読み込む。
 function PluginInputReadAudio(ih: INPUT_HANDLE; start, sampleLength: Integer; buf: Pointer): Integer;
+// 入力プラグインの設定ダイアログを表示する。
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 
 implementation
@@ -19,22 +28,24 @@ uses
 
 type
   PFileContext = ^TFileContext;
+  // AviUtl2の入力ハンドルとして保持するファイル単位の状態。
   TFileContext = record
-    Decoder: TFFmpegDecoder;
-    FileName: string;
-    Width: Integer;
-    Height: Integer;
-    DurationSec: Double;
-    Rate: Integer;
-    Scale: Integer;
-    FrameCount: Integer;
-    Info: BITMAPINFOHEADER;
-    AudioInput: TPluginAudioInputReader;
-    LastDecodedFrame: Integer;
-    CachedFrame: TBytes;
-    LastError: string;
+    Decoder: TFFmpegDecoder; // 映像読み取り用のFFmpegデコーダ
+    FileName: string; // 開いている入力ファイル名
+    Width: Integer; // 映像の幅
+    Height: Integer; // 映像の高さ
+    DurationSec: Double; // 入力ファイルの長さ
+    Rate: Integer; // AviUtl2へ返すフレームレート分子
+    Scale: Integer; // AviUtl2へ返すフレームレート分母
+    FrameCount: Integer; // AviUtl2へ返す総フレーム数
+    Info: BITMAPINFOHEADER; // AviUtl2へ返す映像フォーマット
+    AudioInput: TPluginAudioInputReader; // 音声読み取り用の入力リーダー
+    LastDecodedFrame: Integer; // キャッシュしている直近のフレーム番号
+    CachedFrame: TBytes; // 直近フレームのBGRx32キャッシュ
+    LastError: string; // 直近のデコード/音声openエラー
   end;
 
+// ファイル単位の状態と保持リソースを解放する。
 procedure FreeFileContext(Ctx: PFileContext);
 begin
   if Ctx = nil then
@@ -46,9 +57,10 @@ begin
   Dispose(Ctx);
 end;
 
+// 2つの整数の最大公約数を求める。
 function GreatestCommonDivisor(A, B: Integer): Integer;
 var
-  T: Integer;
+  T: Integer; // ユークリッド互除法の一時値
 begin
   A := Abs(A);
   B := Abs(B);
@@ -64,9 +76,10 @@ begin
     Result := A;
 end;
 
+// fps実数値をAviUtl2へ返すrate/scale形式へ変換する。
 procedure FpsToRateScale(Fps: Double; out Rate, Scale: Integer);
 var
-  Divisor: Integer;
+  Divisor: Integer; // rate/scaleを約分する最大公約数
 begin
   if Fps <= 0 then
     Fps := 30.0;
@@ -81,12 +94,13 @@ begin
   Scale := Scale div Divisor;
 end;
 
+// AviUtl2から渡されたファイルを開き、入力ハンドルを返す。
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
 var
-  Ctx: PFileContext;
-  VideoInfo: TVideoInfo;
-  ErrorMessage: string;
-  AudioErrorMessage: string;
+  Ctx: PFileContext; // 新しく作成する入力ハンドル用状態
+  VideoInfo: TVideoInfo; // FFmpegから取得した動画情報
+  ErrorMessage: string; // 映像open時のエラーメッセージ
+  AudioErrorMessage: string; // 音声open時のエラーメッセージ
 begin
   Result := nil;
   AudioErrorMessage := '';
@@ -143,6 +157,7 @@ begin
   FreeFileContext(Ctx);
 end;
 
+// 入力ハンドルに紐づくデコーダとキャッシュを閉じる。
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
 begin
   Result := False;
@@ -153,9 +168,10 @@ begin
   Result := True;
 end;
 
+// AviUtl2へ動画/音声の入力情報を返す。
 function PluginInputGetInfo(ih: INPUT_HANDLE; info: PInputInfo): BOOL;
 var
-  Ctx: PFileContext;
+  Ctx: PFileContext; // AviUtl2から渡された入力ハンドルの状態
 begin
   Result := False;
   if (ih = nil) or (info = nil) then
@@ -180,14 +196,15 @@ begin
   Result := True;
 end;
 
+// 指定フレームの映像をAviUtl2のバッファへ読み込む。
 function PluginInputReadVideo(ih: INPUT_HANDLE; frame: Integer; buf: Pointer): Integer;
 var
-  Ctx: PFileContext;
-  PositionMs: Integer;
-  PositionMsOut: Integer;
-  ErrorMessage: string;
-  ImageSize: Integer;
-  Decoded: Boolean;
+  Ctx: PFileContext; // AviUtl2から渡された入力ハンドルの状態
+  PositionMs: Integer; // ランダムアクセス時に要求する再生位置
+  PositionMsOut: Integer; // 順方向デコード時にデコーダから返る再生位置
+  ErrorMessage: string; // 映像デコード時のエラーメッセージ
+  ImageSize: Integer; // 1フレーム分のバイト数
+  Decoded: Boolean; // 映像デコードが成功したか
 begin
   Result := 0;
   if (ih = nil) or (buf = nil) then
@@ -229,9 +246,10 @@ begin
   Result := ImageSize;
 end;
 
+// 指定範囲の音声サンプルをAviUtl2のバッファへ読み込む。
 function PluginInputReadAudio(ih: INPUT_HANDLE; start, sampleLength: Integer; buf: Pointer): Integer;
 var
-  Ctx: PFileContext;
+  Ctx: PFileContext; // AviUtl2から渡された入力ハンドルの状態
 begin
   Result := 0;
   if (ih = nil) or (buf = nil) or (sampleLength <= 0) then
@@ -244,6 +262,7 @@ begin
   Result := Ctx^.AudioInput.ReadAudio(start, sampleLength, buf);
 end;
 
+// 入力プラグインの設定ダイアログを表示する。
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 begin
   MessageBox(hwnd, 'VW_Media_Input FFmpeg video input', 'VW_Media_Input', MB_OK);

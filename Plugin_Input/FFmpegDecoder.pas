@@ -1,5 +1,8 @@
 ﻿unit FFmpegDecoder;
 
+// FFmpegを使って動画/音声ファイルを開き、映像フレームやPCM音声を読み出すデコーダ本体ユニット。
+// AviUtl2入力プラグイン側から使う高レベルなopen/read/seek処理を担当する。
+
 interface
 
 uses
@@ -7,8 +10,10 @@ uses
   System.Diagnostics, Vcl.Graphics, FFmpegDecoderTypes;
 
 type
+  // FFmpegデコード処理で発生した例外を表すクラス。
   EFFmpegDecoder = class(Exception);
 
+  // 1つの入力ファイルに対するFFmpegリソースとデコード状態を管理するクラス。
   TFFmpegDecoder = class
   private
     FFileName: string; // 現在開いている動画ファイル名
@@ -106,13 +111,13 @@ end;
 // 保持しているFFmpegリソースを解放する
 procedure TFFmpegDecoder.Close;
 var
-  CodecContext: PAVCodecContext;
-  AudioCodecContext: PAVCodecContext;
-  FormatContext: PAVFormatContext;
-  Packet: PAVPacket;
-  Frame: PAVFrame;
-  AudioFrame: PAVFrame;
-  SwrContext: PSwrContext;
+  CodecContext: PAVCodecContext; // 映像デコードコンテキスト解放用の型付きポインタ
+  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト解放用の型付きポインタ
+  FormatContext: PAVFormatContext; // 入力フォーマットコンテキスト解放用の型付きポインタ
+  Packet: PAVPacket; // 再利用AVPacket解放用の型付きポインタ
+  Frame: PAVFrame; // 映像AVFrame解放用の型付きポインタ
+  AudioFrame: PAVFrame; // 音声AVFrame解放用の型付きポインタ
+  SwrContext: PSwrContext; // 音声変換コンテキスト解放用の型付きポインタ
 begin
   StopAudioPlayback;
 
@@ -201,8 +206,8 @@ end;
 // デバッグ用の音声再生を開始する
 function TFFmpegDecoder.StartAudioPlayback(out ErrorMessage: string): Boolean;
 var
-  WaveFormat: TWaveFormatEx;
-  Ret: MMRESULT;
+  WaveFormat: TWaveFormatEx; // waveOutへ渡すPCM形式
+  Ret: MMRESULT; // waveOut APIの戻り値
 begin
   ErrorMessage := '';
   Result := False;
@@ -245,7 +250,7 @@ end;
 // デバッグ用の音声再生を停止する
 procedure TFFmpegDecoder.StopAudioPlayback;
 var
-  Buffer: PAudioWaveBuffer;
+  Buffer: PAudioWaveBuffer; // 解放対象のwaveOut用PCMバッファ
 begin
   FAudioPlaybackActive := False;
 
@@ -278,21 +283,21 @@ end;
 // 動画を開いてデコード可能な状態にする
 function TFFmpegDecoder.Open(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
 var
-  FormatContext: PAVFormatContext;
-  CodecContext: PAVCodecContext;
-  AudioCodecContext: PAVCodecContext;
-  Codec: PAVCodec;
-  Packet: PAVPacket;
-  Frame: PAVFrame;
-  AudioFrame: PAVFrame;
-  SwrContext: PSwrContext;
-  Utf8FileName: UTF8String;
-  Ret: Integer;
-  StreamIndex: Integer;
-  AudioStreamIndex: Integer;
-  Stream: PAVStream;
-  AudioStream: PAVStream;
-  CodecPar: PAVCodecParameters;
+  FormatContext: PAVFormatContext; // avformatで開く入力コンテキスト
+  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
+  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト
+  Codec: PAVCodec; // 映像ストリームに対応するFFmpegデコーダ
+  Packet: PAVPacket; // 読み込みに再利用するAVPacket
+  Frame: PAVFrame; // 映像デコードに再利用するAVFrame
+  AudioFrame: PAVFrame; // 音声デコードに再利用するAVFrame
+  SwrContext: PSwrContext; // PCM変換用swresampleコンテキスト
+  Utf8FileName: UTF8String; // FFmpegへ渡すUTF-8ファイル名
+  Ret: Integer; // FFmpeg APIの戻り値
+  StreamIndex: Integer; // 対象の映像ストリーム番号
+  AudioStreamIndex: Integer; // 対象の音声ストリーム番号
+  Stream: PAVStream; // 対象の映像ストリーム
+  AudioStream: PAVStream; // 対象の音声ストリーム
+  CodecPar: PAVCodecParameters; // 映像ストリームのコーデック情報
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
@@ -445,14 +450,14 @@ end;
 // 指定ミリ秒位置へシークしてフレームをBitmapへ変換する
 function TFFmpegDecoder.DecodeFrameToBitmap(PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean;
 var
-  FormatContext: PAVFormatContext;
-  CodecContext: PAVCodecContext;
-  Packet: PAVPacket;
-  Frame: PAVFrame;
-  Stream: PAVStream;
-  Ret: Integer;
-  TargetTs: Int64;
-  Stopwatch: TStopwatch;
+  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
+  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
+  Packet: PAVPacket; // 読み込みに再利用するAVPacket
+  Frame: PAVFrame; // デコード結果を受け取るAVFrame
+  Stream: PAVStream; // 対象の映像ストリーム
+  Ret: Integer; // FFmpeg APIの戻り値
+  TargetTs: Int64; // 目的位置のストリーム時間軸PTS
+  Stopwatch: TStopwatch; // デコード負荷測定用タイマー
 begin
   ErrorMessage := '';
   Result := False;
@@ -518,14 +523,14 @@ end;
 // 指定ミリ秒位置へシークしてフレームを32bit BGRxバッファへ直接変換する
 function TFFmpegDecoder.DecodeFrameToBgrx32(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
 var
-  FormatContext: PAVFormatContext;
-  CodecContext: PAVCodecContext;
-  Packet: PAVPacket;
-  Frame: PAVFrame;
-  Stream: PAVStream;
-  Ret: Integer;
-  TargetTs: Int64;
-  Stopwatch: TStopwatch;
+  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
+  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
+  Packet: PAVPacket; // 読み込みに再利用するAVPacket
+  Frame: PAVFrame; // デコード結果を受け取るAVFrame
+  Stream: PAVStream; // 対象の映像ストリーム
+  Ret: Integer; // FFmpeg APIの戻り値
+  TargetTs: Int64; // 目的位置のストリーム時間軸PTS
+  Stopwatch: TStopwatch; // デコード負荷測定用タイマー
 begin
   ErrorMessage := '';
   Result := False;
@@ -592,13 +597,13 @@ end;
 // 現在位置から次の映像フレームを順方向デコードする
 function TFFmpegDecoder.DecodeNextFrameToBitmap(Bitmap: TBitmap; out PositionMs: Integer; out ErrorMessage: string): Boolean;
 var
-  FormatContext: PAVFormatContext;
-  CodecContext: PAVCodecContext;
-  Packet: PAVPacket;
-  Frame: PAVFrame;
-  Stream: PAVStream;
-  Ret: Integer;
-  Stopwatch: TStopwatch;
+  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
+  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
+  Packet: PAVPacket; // 読み込みに再利用するAVPacket
+  Frame: PAVFrame; // デコード結果を受け取るAVFrame
+  Stream: PAVStream; // 対象の映像ストリーム
+  Ret: Integer; // FFmpeg APIの戻り値
+  Stopwatch: TStopwatch; // デコード負荷測定用タイマー
 begin
   ErrorMessage := '';
   PositionMs := -1;
@@ -658,13 +663,13 @@ end;
 // 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
 function TFFmpegDecoder.DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
 var
-  FormatContext: PAVFormatContext;
-  CodecContext: PAVCodecContext;
-  Packet: PAVPacket;
-  Frame: PAVFrame;
-  Stream: PAVStream;
-  Ret: Integer;
-  Stopwatch: TStopwatch;
+  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
+  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
+  Packet: PAVPacket; // 読み込みに再利用するAVPacket
+  Frame: PAVFrame; // デコード結果を受け取るAVFrame
+  Stream: PAVStream; // 対象の映像ストリーム
+  Ret: Integer; // FFmpeg APIの戻り値
+  Stopwatch: TStopwatch; // デコード負荷測定用タイマー
 begin
   ErrorMessage := '';
   PositionMs := -1;
@@ -737,8 +742,8 @@ end;
 // waveOutで再生完了したPCMバッファを解放する
 procedure TFFmpegDecoder.CleanupAudioBuffers;
 var
-  I: Integer;
-  Buffer: PAudioWaveBuffer;
+  I: Integer; // FAudioBuffersを後ろから走査するインデックス
+  Buffer: PAudioWaveBuffer; // 解放判定中のwaveOut用PCMバッファ
 begin
   if FAudioBuffers = nil then
     Exit;
@@ -763,7 +768,7 @@ end;
 // PCMバッファをwaveOutへ渡す
 procedure TFFmpegDecoder.QueueAudioPcm(const Pcm: TBytes);
 var
-  Buffer: PAudioWaveBuffer;
+  Buffer: PAudioWaveBuffer; // waveOutへ渡す新規PCMバッファ
 begin
   if (not FAudioPlaybackActive) or (FWaveOut = 0) or (Length(Pcm) = 0) then
     Exit;
@@ -800,7 +805,7 @@ end;
 // PCMバッファから音量確認用の統計を更新する
 procedure TFFmpegDecoder.UpdateAudioStats(const Pcm: TBytes; SampleCount: Integer; PtsMs: Integer);
 var
-  QueuedBuffers: Integer;
+  QueuedBuffers: Integer; // waveOutに渡して未完了のバッファ数
 begin
   if FAudioBuffers <> nil then
     QueuedBuffers := FAudioBuffers.Count
@@ -812,14 +817,14 @@ end;
 // 音声パケットをデコードし、デバッグ用にPCM再生と統計更新を行う
 procedure TFFmpegDecoder.DecodeAudioPacket(Packet: Pointer);
 var
-  AudioCodecContext: PAVCodecContext;
-  AudioFrame: PAVFrame;
-  AudioStream: PAVStream;
-  Ret: Integer;
-  Pcm: TBytes;
-  SampleCount: Integer;
-  PtsMs: Integer;
-  Stopwatch: TStopwatch;
+  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト
+  AudioFrame: PAVFrame; // デコード結果を受け取る音声AVFrame
+  AudioStream: PAVStream; // 対象の音声ストリーム
+  Ret: Integer; // FFmpeg APIの戻り値
+  Pcm: TBytes; // 変換後のPCM16 stereo 48kHz
+  SampleCount: Integer; // 変換後PCMのサンプル数
+  PtsMs: Integer; // 音声フレームのミリ秒位置
+  Stopwatch: TStopwatch; // 音声処理負荷測定用タイマー
 begin
   if (not FAudioPlaybackActive) or (Packet = nil) then
     Exit;
@@ -862,15 +867,16 @@ end;
 // 開いているファイルの音声を指定サンプル数までPCM16 stereo 48kHzへ順次デコードする
 function TFFmpegDecoder.DecodeAudioPcm16Stereo48kUntil(TargetSampleCount: Integer; var Pcm: TBytes; var SampleCount: Integer; out Finished: Boolean; out ErrorMessage: string): Boolean;
 var
-  FormatContext: PAVFormatContext;
-  AudioCodecContext: PAVCodecContext;
-  Packet: PAVPacket;
-  AudioFrame: PAVFrame;
-  Ret: Integer;
-  Chunk: TBytes;
-  ChunkSampleCount: Integer;
-  OldBytes: Integer;
+  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
+  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト
+  Packet: PAVPacket; // 読み込みに再利用するAVPacket
+  AudioFrame: PAVFrame; // デコード結果を受け取る音声AVFrame
+  Ret: Integer; // FFmpeg APIの戻り値
+  Chunk: TBytes; // 1フレーム分の変換後PCM
+  ChunkSampleCount: Integer; // Chunkに含まれるサンプル数
+  OldBytes: Integer; // 追記前のPCMバッファサイズ
 
+  // 受け取った音声AVFrameをPCMキャッシュの末尾へ追加する。
   procedure AppendDecodedAudioFrame;
   begin
     if not ConvertAudioFrameToPcm16Stereo48k(AudioFrame, PSwrContext(FSwrContext),
@@ -944,7 +950,7 @@ end;
 // 一時デコーダで動画情報だけを読む
 class function TFFmpegDecoder.ReadVideoInfo(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
 var
-  Decoder: TFFmpegDecoder;
+  Decoder: TFFmpegDecoder; // 情報取得だけに使う一時デコーダ
 begin
   Decoder := TFFmpegDecoder.Create;
   try
@@ -957,8 +963,8 @@ end;
 // 一時デコーダで指定位置のフレームだけを読む
 class function TFFmpegDecoder.DecodeFrameToBitmap(const FileName: string; PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean;
 var
-  Decoder: TFFmpegDecoder;
-  Info: TVideoInfo;
+  Decoder: TFFmpegDecoder; // フレーム取得だけに使う一時デコーダ
+  Info: TVideoInfo; // 一時デコーダで取得する動画情報
 begin
   Decoder := TFFmpegDecoder.Create;
   try

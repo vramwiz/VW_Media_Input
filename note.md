@@ -22,9 +22,6 @@
 - `D:\DelphiProg\test\Syncroh2\Syncroh2_Input_Base.dproj`
 - `Plugin_Input\PluginInputBase.pas`
 - `AviUtl\Input\AviUtl2InputTypes.pas`
-- `AviUtl\Render\AviUtl2Render.pas`
-- `AviUtl\SharedMemory\SharedMemoryManager.pas`
-- 必要な `Lib\...` ユニット
 
 FFmpeg 検証コード:
 
@@ -194,15 +191,12 @@ wav について:
   - 映像/音声の負荷統計と、PCM 音量確認用統計の計算。
   - `Plugin_Input\FFmpegDecoder.pas` 側は統計 record を持ち、このユニットの関数へ更新処理を委譲する。
 
-### AviUtl2 型・共通ユニット
+### AviUtl2 型ユニット
 
 - `AviUtl\Input\AviUtl2InputTypes.pas`
   - AviUtl2 入力プラグイン用の構造体、フラグ、関数型。
 
-- `AviUtl\Render\AviUtl2Render.pas`
-- `AviUtl\SharedMemory\SharedMemoryManager.pas`
-- `Lib\...`
-  - コピー元 `Syncroh2_Input_Base` 由来の共通ユニット。
+- `AviUtl2InputTypes.pas` 以外の `AviUtl` 配下ユニットと `Lib` 配下ユニットは未使用確認後に削除済み。
 
 ### 分割方針
 
