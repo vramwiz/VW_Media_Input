@@ -44,7 +44,7 @@ FFmpeg 8.1 系 DLL:
 
 - `VW_Media_Input.dpr` / `VW_Media_Input.dproj` を作成済み。
 - `Syncroh2_Input_Base` 由来のプロジェクト名を `VW_Media_Input` に置換済み。
-- `FFmpegDecoder.pas` はコピー済みだが、入力プラグイン処理にはまだ接続していない。
+- `Plugin_Input\FFmpegDecoder.pas` はコピー済みだが、入力プラグイン処理にはまだ接続していない。
 - Win64 Debug ビルド成功。
   - 警告 1
   - エラー 0
@@ -58,6 +58,28 @@ FFmpeg 8.1 系 DLL:
 - `func_read_audio` は `0` を返すだけ。
 - `INPUT_PLUGIN_FLAG_AUDIO` / `INPUT_INFO_FLAG_AUDIO` はまだ使っていない。
 
+## ビルド方法
+
+Delphi 37.0 の環境変数を読み込んでから MSBuild で Win64 Debug をビルドする。
+
+PowerShell から実行する場合:
+
+```powershell
+cmd.exe /s /c '"C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && MSBuild.exe VW_Media_Input.dproj /t:Build /p:Config=Debug /p:Platform=Win64'
+```
+
+cmd から実行する場合:
+
+```bat
+"C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && MSBuild.exe VW_Media_Input.dproj /t:Build /p:Config=Debug /p:Platform=Win64
+```
+
+2026-06-02 時点では、この手順で Win64 Debug ビルド成功。
+
+- 警告 0
+- エラー 0
+- post-build で `C:\ProgramData\aviutl2\Plugin\VW_Media_Input` へ `.aui2` と FFmpeg DLL をコピーする。
+
 ## 現在のファイルフィルター
 
 現状では実デコード未接続のため、フィルターは動画系だけにしている。
@@ -70,7 +92,7 @@ FFmpeg 8.1 系 DLL:
 注意:
 
 - フィルターに表示されるだけで、現時点では実際の動画デコード対応はまだ未実装。
-- 次の作業で `PluginInputBase.pas` と `FFmpegDecoder.pas` を接続する必要がある。
+- 次の作業で `PluginInputBase.pas` と `Plugin_Input\FFmpegDecoder.pas` を接続する必要がある。
 
 ## 将来対応
 
@@ -107,11 +129,11 @@ wav について:
 - `sws_scale + TBitmap` 変換も平均数 ms 程度の負荷がある。
 - `ImagePreview` への表示コピーは大きな負荷ではなかった。
 
-現在コピーした `FFmpegDecoder.pas` は、負荷測定のため一時的にコメントアウトされた箇所を含む可能性がある。
+現在コピーした `Plugin_Input\FFmpegDecoder.pas` は、負荷測定のため一時的にコメントアウトされた箇所を含む可能性がある。
 
 通常の映像表示/変換へ戻す場合は、以下を確認する。
 
-- `FFmpegDecoder.pas` の `CopyFrameToBitmap(Frame, Bitmap)` 呼び出し
+- `Plugin_Input\FFmpegDecoder.pas` の `CopyFrameToBitmap(Frame, Bitmap)` 呼び出し
 - `Unit9.pas` 側の `ImagePreview.Picture.Bitmap.Assign(Bitmap)` はこのプラグインには不要
 
 プラグインでは `TBitmap` 表示ではなく、最終的には AviUtl2 の `buf` へ直接出力する設計を目指す。
@@ -142,7 +164,7 @@ wav について:
 
 ### FFmpeg デコーダ本体
 
-- `FFmpegDecoder.pas`
+- `Plugin_Input\FFmpegDecoder.pas`
   - FFmpeg デコードの中心ユニット。
   - ファイル open / close、映像デコード、音声デコード、シーク、順方向読み取りを担当する。
   - FFmpeg の低レベル API 定義、型定義、フレーム変換、統計計算は別ユニットへ分離済み。
@@ -170,7 +192,7 @@ wav について:
 
 - `Plugin_Input\FFmpegDecodeStats.pas`
   - 映像/音声の負荷統計と、PCM 音量確認用統計の計算。
-  - `FFmpegDecoder.pas` 側は統計 record を持ち、このユニットの関数へ更新処理を委譲する。
+  - `Plugin_Input\FFmpegDecoder.pas` 側は統計 record を持ち、このユニットの関数へ更新処理を委譲する。
 
 ### AviUtl2 型・共通ユニット
 
@@ -184,7 +206,7 @@ wav について:
 
 ### 分割方針
 
-- `FFmpegDecoder.pas` には「開く、閉じる、読む、シークする」というデコードの流れを残す。
+- `Plugin_Input\FFmpegDecoder.pas` には「開く、閉じる、読む、シークする」というデコードの流れを残す。
 - FFmpeg API 定義や DLL ロードは `FFmpegApi.pas` に置く。
 - AviUtl2 側の都合は `PluginInputBase.pas` / `PluginAudioInputReader.pas` に寄せる。
 - 変換、統計、ストリーム情報などの純粋な補助処理は `Plugin_Input\FFmpeg*.pas` へ分ける。

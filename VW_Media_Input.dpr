@@ -13,10 +13,12 @@ uses
   AviUtl2InputTypes in 'AviUtl\Input\AviUtl2InputTypes.pas',
   FFmpegApi in 'Plugin_Input\FFmpegApi.pas',
   FFmpegDecoderTypes in 'Plugin_Input\FFmpegDecoderTypes.pas',
+  FFmpegAudioConvert in 'Plugin_Input\FFmpegAudioConvert.pas',
+  FFmpegAudioOpen in 'Plugin_Input\FFmpegAudioOpen.pas',
   FFmpegDecodeStats in 'Plugin_Input\FFmpegDecodeStats.pas',
   FFmpegFrameConvert in 'Plugin_Input\FFmpegFrameConvert.pas',
   FFmpegStreamInfo in 'Plugin_Input\FFmpegStreamInfo.pas',
-  FFmpegDecoder in 'FFmpegDecoder.pas',
+  FFmpegDecoder in 'Plugin_Input\FFmpegDecoder.pas',
   PluginAudioInputReader in 'Plugin_Input\PluginAudioInputReader.pas';
 
 //------------------------------------------------------------------------------

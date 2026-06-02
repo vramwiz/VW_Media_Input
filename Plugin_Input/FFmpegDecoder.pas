@@ -1,10 +1,10 @@
-unit FFmpegDecoder;
+﻿unit FFmpegDecoder;
 
 interface
 
 uses
   Winapi.Windows, Winapi.MMSystem, System.SysUtils, System.Generics.Collections,
-  System.Diagnostics, System.Math, Vcl.Graphics, FFmpegDecoderTypes;
+  System.Diagnostics, Vcl.Graphics, FFmpegDecoderTypes;
 
 type
   EFFmpegDecoder = class(Exception);
@@ -82,7 +82,8 @@ type
 implementation
 
 uses
-  FFmpegApi, FFmpegDecodeStats, FFmpegFrameConvert, FFmpegStreamInfo;
+  FFmpegApi, FFmpegAudioConvert, FFmpegAudioOpen, FFmpegDecodeStats, FFmpegFrameConvert,
+  FFmpegStreamInfo;
 
 // デコーダインスタンスを初期化する
 constructor TFFmpegDecoder.Create;
@@ -281,7 +282,6 @@ var
   CodecContext: PAVCodecContext;
   AudioCodecContext: PAVCodecContext;
   Codec: PAVCodec;
-  AudioCodec: PAVCodec;
   Packet: PAVPacket;
   Frame: PAVFrame;
   AudioFrame: PAVFrame;
@@ -293,10 +293,6 @@ var
   Stream: PAVStream;
   AudioStream: PAVStream;
   CodecPar: PAVCodecParameters;
-  AudioCodecPar: PAVCodecParameters;
-  InLayout: TAVChannelLayout;
-  OutLayout: TAVChannelLayout;
-  SwrRet: Integer;
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
@@ -311,8 +307,6 @@ begin
   SwrContext := nil;
   AudioStream := nil;
   AudioStreamIndex := -1;
-  FillChar(InLayout, SizeOf(InLayout), 0);
-  FillChar(OutLayout, SizeOf(OutLayout), 0);
 
   try
     TFFmpegApi.EnsureLoaded;
@@ -403,78 +397,7 @@ begin
       Exit;
     end;
 
-    if Info.Audio.Present then
-    begin
-      AudioStreamIndex := Info.Audio.StreamIndex;
-      AudioStream := StreamAt(FormatContext, AudioStreamIndex);
-      if not Assigned(AudioStream) then
-        Info.Audio.OpenError := 'Audio stream pointer is nil.'
-      else if not Assigned(AudioStream.codecpar) then
-        Info.Audio.OpenError := 'Audio codec parameters pointer is nil.'
-      else
-      begin
-        AudioCodecPar := AudioStream.codecpar;
-        AudioCodec := TFFmpegApi.avcodec_find_decoder(AudioCodecPar.codec_id);
-        if not Assigned(AudioCodec) then
-          Info.Audio.OpenError := Format('Audio decoder was not found. codec_id=%d', [AudioCodecPar.codec_id])
-        else
-        begin
-          AudioCodecContext := TFFmpegApi.avcodec_alloc_context3(AudioCodec);
-          if not Assigned(AudioCodecContext) then
-            Info.Audio.OpenError := 'Audio avcodec_alloc_context3 failed.'
-          else
-          begin
-            Ret := TFFmpegApi.avcodec_parameters_to_context(AudioCodecContext, AudioCodecPar);
-            if Ret < 0 then
-              Info.Audio.OpenError := 'Audio avcodec_parameters_to_context failed: ' + TFFmpegApi.ErrorText(Ret)
-            else
-            begin
-              Ret := TFFmpegApi.avcodec_open2(AudioCodecContext, AudioCodec, nil);
-              if Ret < 0 then
-                Info.Audio.OpenError := 'Audio avcodec_open2 failed: ' + TFFmpegApi.ErrorText(Ret)
-              else
-              begin
-                AudioFrame := TFFmpegApi.av_frame_alloc();
-                if not Assigned(AudioFrame) then
-                  Info.Audio.OpenError := 'Audio av_frame_alloc failed.'
-                else
-                begin
-                  if AudioCodecPar.ch_layout.nb_channels > 0 then
-                    Ret := TFFmpegApi.av_channel_layout_copy(@InLayout, @AudioCodecPar.ch_layout)
-                  else
-                  begin
-                    TFFmpegApi.av_channel_layout_default(@InLayout, AUDIO_OUTPUT_CHANNELS);
-                    Ret := 0;
-                  end;
-
-                  if Ret < 0 then
-                    Info.Audio.OpenError := 'av_channel_layout_copy failed: ' + TFFmpegApi.ErrorText(Ret)
-                  else
-                  begin
-                    TFFmpegApi.av_channel_layout_default(@OutLayout, AUDIO_OUTPUT_CHANNELS);
-                    SwrRet := TFFmpegApi.swr_alloc_set_opts2(@SwrContext, @OutLayout, AV_SAMPLE_FMT_S16,
-                      AUDIO_OUTPUT_SAMPLE_RATE, @InLayout, AudioCodecPar.format, AudioCodecPar.sample_rate, 0, nil);
-                    if (SwrRet < 0) or not Assigned(SwrContext) then
-                    begin
-                      Info.Audio.OpenError := Format('swr_alloc_set_opts2 failed: %s rate=%d fmt=%d channels=%d',
-                        [TFFmpegApi.ErrorText(SwrRet), AudioCodecPar.sample_rate, AudioCodecPar.format,
-                         AudioCodecPar.ch_layout.nb_channels]);
-                    end
-                    else if TFFmpegApi.swr_init(SwrContext) < 0 then
-                    begin
-                      TFFmpegApi.swr_free(@SwrContext);
-                      SwrContext := nil;
-                      Info.Audio.OpenError := Format('swr_init failed. rate=%d fmt=%d channels=%d',
-                        [AudioCodecPar.sample_rate, AudioCodecPar.format, AudioCodecPar.ch_layout.nb_channels]);
-                    end;
-                  end;
-                end;
-              end;
-            end;
-          end;
-        end;
-      end;
-    end;
+    OpenAudioDecoder(FormatContext, Info, AudioCodecContext, AudioStream, AudioStreamIndex, AudioFrame, SwrContext);
 
     FFileName := FileName;
     FFormatContext := FormatContext;
@@ -893,10 +816,8 @@ var
   AudioFrame: PAVFrame;
   AudioStream: PAVStream;
   Ret: Integer;
-  OutData: array[0..0] of PByte;
-  OutSamples: Integer;
-  ConvertedSamples: Integer;
   Pcm: TBytes;
+  SampleCount: Integer;
   PtsMs: Integer;
   Stopwatch: TStopwatch;
 begin
@@ -921,24 +842,15 @@ begin
 
     while TFFmpegApi.avcodec_receive_frame(AudioCodecContext, AudioFrame) = 0 do
     begin
-      if FInfo.Audio.SampleRate > 0 then
-        OutSamples := Ceil(AudioFrame.nb_samples * AUDIO_OUTPUT_SAMPLE_RATE / FInfo.Audio.SampleRate) + 256
-      else
-        OutSamples := AudioFrame.nb_samples + 256;
-
-      SetLength(Pcm, OutSamples * AUDIO_OUTPUT_CHANNELS * SizeOf(SmallInt));
-      OutData[0] := @Pcm[0];
-      ConvertedSamples := TFFmpegApi.swr_convert(PSwrContext(FSwrContext), @OutData[0], OutSamples,
-        @AudioFrame.data[0], AudioFrame.nb_samples);
-      if ConvertedSamples <= 0 then
+      if not ConvertAudioFrameToPcm16Stereo48k(AudioFrame, PSwrContext(FSwrContext),
+        FInfo.Audio.SampleRate, Pcm, SampleCount) then
       begin
         Inc(FAudioStats.ConvertErrors);
         Continue;
       end;
 
-      SetLength(Pcm, ConvertedSamples * AUDIO_OUTPUT_CHANNELS * SizeOf(SmallInt));
       PtsMs := StreamTimestampToMs(AudioStream, AudioFrame.pts);
-      UpdateAudioStats(Pcm, ConvertedSamples, PtsMs);
+      UpdateAudioStats(Pcm, SampleCount, PtsMs);
       QueueAudioPcm(Pcm);
     end;
   finally
@@ -955,34 +867,21 @@ var
   Packet: PAVPacket;
   AudioFrame: PAVFrame;
   Ret: Integer;
-  OutData: array[0..0] of PByte;
-  OutSamples: Integer;
-  ConvertedSamples: Integer;
-  ConvertedBytes: Integer;
+  Chunk: TBytes;
+  ChunkSampleCount: Integer;
   OldBytes: Integer;
 
   procedure AppendDecodedAudioFrame;
   begin
-    if FInfo.Audio.SampleRate > 0 then
-      OutSamples := Ceil(AudioFrame.nb_samples * AUDIO_OUTPUT_SAMPLE_RATE / FInfo.Audio.SampleRate) + 256
-    else
-      OutSamples := AudioFrame.nb_samples + 256;
+    if not ConvertAudioFrameToPcm16Stereo48k(AudioFrame, PSwrContext(FSwrContext),
+      FInfo.Audio.SampleRate, Chunk, ChunkSampleCount) then
+      Exit;
 
     OldBytes := Length(Pcm);
-    SetLength(Pcm, OldBytes + OutSamples * AUDIO_OUTPUT_CHANNELS * SizeOf(SmallInt));
-    OutData[0] := @Pcm[OldBytes];
-    ConvertedSamples := TFFmpegApi.swr_convert(PSwrContext(FSwrContext), @OutData[0], OutSamples,
-      @AudioFrame.data[0], AudioFrame.nb_samples);
-
-    if ConvertedSamples <= 0 then
-    begin
-      SetLength(Pcm, OldBytes);
-      Exit;
-    end;
-
-    ConvertedBytes := ConvertedSamples * AUDIO_OUTPUT_CHANNELS * SizeOf(SmallInt);
-    SetLength(Pcm, OldBytes + ConvertedBytes);
-    Inc(SampleCount, ConvertedSamples);
+    SetLength(Pcm, OldBytes + Length(Chunk));
+    if Length(Chunk) > 0 then
+      Move(Chunk[0], Pcm[OldBytes], Length(Chunk));
+    Inc(SampleCount, ChunkSampleCount);
   end;
 
 begin

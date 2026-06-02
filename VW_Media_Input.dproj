@@ -145,10 +145,12 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="AviUtl\Input\AviUtl2InputTypes.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegApi.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecoderTypes.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegAudioConvert.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegAudioOpen.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecodeStats.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegFrameConvert.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegStreamInfo.pas"/>
-        <DCCReference Include="FFmpegDecoder.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegDecoder.pas"/>
         <DCCReference Include="Plugin_Input\PluginAudioInputReader.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
