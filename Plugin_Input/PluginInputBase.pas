@@ -29,7 +29,7 @@ uses
 const
   MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
   SHARED_FRAME_CACHE_CAPACITY = 16;
-  DECODE_TRACE_ENABLED = True;
+  DECODE_TRACE_ENABLED = False;
 
 type
   PFileContext = ^TFileContext;

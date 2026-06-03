@@ -93,7 +93,7 @@ uses
   FFmpegStreamInfo;
 
 const
-  DECODE_TRACE_ENABLED = True;
+  DECODE_TRACE_ENABLED = False;
 
 procedure DecodeTrace(const Msg: string);
 var
