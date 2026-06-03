@@ -32,8 +32,12 @@ const
   VIDEO_OUTPUT_BGRX32 = 0;
   VIDEO_OUTPUT_BGR24 = 1;
   VIDEO_OUTPUT_YUY2 = 2;
+  VIDEO_OUTPUT_I420 = 3;
+  VIDEO_OUTPUT_YC48 = 4;
   VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32;
   BI_YUY2 = $32595559; // 'YUY2'
+  BI_I420 = $30323449; // 'I420'
+  BI_YC48 = $38344359; // 'YC48'
 {$IFDEF DEBUG}
   DECODE_TRACE_ENABLED = True; // Debug時だけデコードログ/計測を有効にする
   CLEAR_DECODE_TRACE_ON_OPEN = True; // Debug時だけ入力open時にデコードログを作り直す
@@ -94,11 +98,14 @@ procedure DecodeTrace(const Msg: string); forward;
 
 // 入力openごとのデコードログを初期化する。
 procedure ClearDecodeTraceLog(const Reason: string);
+{$IFDEF DEBUG}
 var
   F: TextFile;
   LogFileName: string;
   Line: string;
+{$ENDIF}
 begin
+{$IFDEF DEBUG}
   if (not DECODE_TRACE_ENABLED) or (not CLEAR_DECODE_TRACE_ON_OPEN) then
     Exit;
 
@@ -119,6 +126,7 @@ begin
   finally
     CloseFile(F);
   end;
+{$ENDIF}
 end;
 
 // Debug時のデコードログをTEMPへ追記する。
@@ -326,6 +334,10 @@ begin
       Result := 3;
     VIDEO_OUTPUT_YUY2:
       Result := 2;
+    VIDEO_OUTPUT_I420:
+      Result := 1;
+    VIDEO_OUTPUT_YC48:
+      Result := 6;
   else
     Result := 4;
   end;
@@ -339,10 +351,25 @@ begin
     Result := ((Result + 3) div 4) * 4;
 end;
 
+function I420ImageSize(Width, Height: Integer): Integer;
+var
+  ChromaWidth: Integer;
+  ChromaHeight: Integer;
+begin
+  ChromaWidth := (Width + 1) div 2;
+  ChromaHeight := (Height + 1) div 2;
+  Result := Width * Height + ChromaWidth * ChromaHeight * 2;
+end;
+
 // AviUtl2へ返す1フレームあたりのバイト数を返す。
 function VideoImageSize(const Ctx: PFileContext): Integer;
 begin
-  Result := VideoStride(Ctx) * Ctx^.Height;
+  case VIDEO_OUTPUT_FORMAT of
+    VIDEO_OUTPUT_I420:
+      Result := I420ImageSize(Ctx^.Width, Ctx^.Height);
+  else
+    Result := VideoStride(Ctx) * Ctx^.Height;
+  end;
 end;
 
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
@@ -423,6 +450,16 @@ begin
           begin
             Ctx^.Info.biBitCount := 16;
             Ctx^.Info.biCompression := BI_YUY2;
+          end;
+          VIDEO_OUTPUT_I420:
+          begin
+            Ctx^.Info.biBitCount := 12;
+            Ctx^.Info.biCompression := BI_I420;
+          end;
+          VIDEO_OUTPUT_YC48:
+          begin
+            Ctx^.Info.biBitCount := 48;
+            Ctx^.Info.biCompression := BI_YC48;
           end;
         else
         begin
@@ -574,6 +611,12 @@ begin
         VIDEO_OUTPUT_YUY2:
           Decoded := Ctx^.Decoder.DecodeNextFrameToYuy2Optional(buf, VideoStride(Ctx),
             ForwardFrame = frame, PositionMsOut, ErrorMessage);
+        VIDEO_OUTPUT_I420:
+          Decoded := Ctx^.Decoder.DecodeNextFrameToI420Optional(buf, VideoStride(Ctx),
+            ForwardFrame = frame, PositionMsOut, ErrorMessage);
+        VIDEO_OUTPUT_YC48:
+          Decoded := Ctx^.Decoder.DecodeNextFrameToYc48Optional(buf, VideoStride(Ctx),
+            ForwardFrame = frame, PositionMsOut, ErrorMessage);
       else
         Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32Optional(buf, VideoStride(Ctx),
           ForwardFrame = frame, PositionMsOut, ErrorMessage);
@@ -595,6 +638,10 @@ begin
         Decoded := Ctx^.Decoder.DecodeFrameToBgr24(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
       VIDEO_OUTPUT_YUY2:
         Decoded := Ctx^.Decoder.DecodeFrameToYuy2(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
+      VIDEO_OUTPUT_I420:
+        Decoded := Ctx^.Decoder.DecodeFrameToI420(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
+      VIDEO_OUTPUT_YC48:
+        Decoded := Ctx^.Decoder.DecodeFrameToYc48(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
     else
       Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
     end;

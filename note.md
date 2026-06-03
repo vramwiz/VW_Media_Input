@@ -402,3 +402,63 @@ YUY2入力高速化とデバッグログ整理に関係するユニット:
   - FFmpeg DLL関数と必要な定数の宣言を担当する。
   - YUY2出力用に `AV_PIX_FMT_YUYV422 = 1` を定義する。
 
+## 2026-06-03 デコード速度調査メモ
+
+目的:
+
+- `VW_Media_Output` 側の `get_video` が支配的に遅いため、`VW_Media_Input` 側の映像読み込み経路を確認した。
+- 数フレーム先読みが有効か、または色変換・出力形式の変更が効くかを比較した。
+
+前提:
+
+- テスト出力ログ: `D:\VoiceroidProj\main_14\59\proj14_59_01_test.mp4.perf.log`
+- 入力詳細ログ: `%TEMP%\VW_Media_Input_decode.log`
+- 主な素材は `src_fmt=0`、`dst_fmt=28`。
+- `src_fmt=0` は FFmpeg の `AV_PIX_FMT_YUV420P` 相当と考えられる。
+- `dst_fmt=28` は `AV_PIX_FMT_BGRA`。
+
+確認できたこと:
+
+- `read_video` はほぼ `route=forward` / `gap=1` だった。
+- `seek` は少数で、今回の遅さの主因ではなかった。
+- 数フレーム先読みは今回のエンコード用途では優先度が低い。
+- `next_decode` の時間はほぼ `convert_ms` と一致しており、主因は FFmpeg デコードそのものではなく `sws_scale` による `YUV420P -> BGRA/BGRx32` 変換。
+
+試した変更:
+
+- 映像読み込み中に音声パケットを `DecodeAudioPacket` しないようにした。
+  - `get_video avg` が約 `21.082ms -> 19.607ms` まで改善した実行があり、効果あり。
+- `USE_YUY2_VIDEO_OUTPUT=True` / YUY2 出力。
+  - バッファ量は半分になるが、`sws_scale` の YUY2 変換が重く、BGRx32 より遅かった。
+- `SWS_BILINEAR -> SWS_FAST_BILINEAR`。
+  - 効果なし。むしろわずかに悪化したため不採用。
+- BGR24 出力。
+  - `image_size` は BGRx32 より小さくなるが、変換時間・全体時間は改善しなかった。
+  - BGRx32 と同等かやや悪い。
+
+代表値:
+
+- YUY2:
+  - `next_decode_yuy2 avg` 約 `5.703ms`
+  - `read_video forward avg` 約 `6.114ms`
+- BGRx32:
+  - `next_decode avg` 約 `4.965ms` から `5.1ms` 前後
+  - `read_video forward avg` 約 `5.4ms` 前後
+- BGR24:
+  - `next_decode_bgr24 avg` 約 `5.115ms`
+  - `read_video forward avg` 約 `5.533ms`
+
+現時点の結論:
+
+- 採用候補は BGRx32。
+- `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32` を現状の基準とする。
+- YUY2、BGR24、`SWS_FAST_BILINEAR` は今回の素材・環境では不採用。
+- 先読みは今回のログでは効果が薄そうなので実装しない。
+
+次に試す候補:
+
+- `sws_scale` を避ける方向を検討する。
+- 入力フレームが `YUV420P` で来ているため、AviUtl2 側が `I420` / `IYUV` / `YV12` / `NV12` などの YUV420 系 FourCC を受けられるか試す。
+- 最初に試すなら、元の `YUV420P` に近い `I420` が軽そう。
+- `NV12` は出力エンコード側に近いが、Y/U/V から UV インターリーブへの詰め替えが必要。
+
