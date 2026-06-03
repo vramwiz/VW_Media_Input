@@ -97,7 +97,11 @@ uses
   FFmpegStreamInfo;
 
 const
+{$IFDEF DEBUG}
+  DECODE_TRACE_ENABLED = True;
+{$ELSE}
   DECODE_TRACE_ENABLED = False;
+{$ENDIF}
 
 procedure DecodeTrace(const Msg: string);
 var
@@ -869,7 +873,6 @@ begin
       try
         if Packet.stream_index = FAudioStreamIndex then
         begin
-          DecodeAudioPacket(Packet);
           Continue;
         end;
 
@@ -947,7 +950,6 @@ begin
       try
         if Packet.stream_index = FAudioStreamIndex then
         begin
-          DecodeAudioPacket(Packet);
           Continue;
         end;
 
@@ -1066,7 +1068,6 @@ begin
       try
         if Packet.stream_index = FAudioStreamIndex then
         begin
-          DecodeAudioPacket(Packet);
           Continue;
         end;
 
@@ -1219,7 +1220,6 @@ begin
       try
         if Packet.stream_index = FAudioStreamIndex then
         begin
-          DecodeAudioPacket(Packet);
           Continue;
         end;
 

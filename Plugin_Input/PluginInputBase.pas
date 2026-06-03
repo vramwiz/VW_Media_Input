@@ -29,10 +29,15 @@ uses
 const
   MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
   SHARED_FRAME_CACHE_CAPACITY = 16; // ファイル間共有フレームキャッシュの最大保持数
-  USE_YUY2_VIDEO_OUTPUT = True; // TrueでYUY2、Falseで従来の32bit BGRxへ戻す
+  USE_YUY2_VIDEO_OUTPUT = False; // TrueでYUY2、Falseで従来の32bit BGRxへ戻す
   BI_YUY2 = $32595559; // 'YUY2'
-  DECODE_TRACE_ENABLED = False; // デコードログ/計測を無効にする
-  CLEAR_DECODE_TRACE_ON_OPEN = False; // 入力open時のデコードログ初期化も無効にする
+{$IFDEF DEBUG}
+  DECODE_TRACE_ENABLED = True; // Debug時だけデコードログ/計測を有効にする
+  CLEAR_DECODE_TRACE_ON_OPEN = True; // Debug時だけ入力open時にデコードログを作り直す
+{$ELSE}
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成や計測を含めない
+  CLEAR_DECODE_TRACE_ON_OPEN = False; // Releaseではログクリアもしない
+{$ENDIF}
 
 type
   PFileContext = ^TFileContext;
@@ -71,12 +76,18 @@ var
   ReusableDecoderFileName: string; // 再利用デコーダが開いているファイル名
   ReusableDecoderInfo: TVideoInfo; // 再利用デコーダの動画情報
   ReusableDecoderLastFrame: Integer; // 再利用デコーダの最後に読んだフレーム
+{$IFDEF DEBUG}
+  DecodeTraceLogCleared: Boolean; // Debugログをプロセス中に一度だけ初期化したか
+{$ENDIF}
 
 // デコードログの出力先ファイル名を返す。
 function DecodeTraceLogFileName: string;
 begin
   Result := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
 end;
+
+// Debug時のデコードログをTEMPへ追記する。
+procedure DecodeTrace(const Msg: string); forward;
 
 // 入力openごとのデコードログを初期化する。
 procedure ClearDecodeTraceLog(const Reason: string);
@@ -87,6 +98,13 @@ var
 begin
   if (not DECODE_TRACE_ENABLED) or (not CLEAR_DECODE_TRACE_ON_OPEN) then
     Exit;
+
+  if DecodeTraceLogCleared then
+  begin
+    DecodeTrace('log_keep ' + Reason);
+    Exit;
+  end;
+  DecodeTraceLogCleared := True;
 
   LogFileName := DecodeTraceLogFileName;
   Line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' [PluginInputBase] log_clear ' + Reason;
