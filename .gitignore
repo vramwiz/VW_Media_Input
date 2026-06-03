@@ -5,6 +5,7 @@ __history/
 *.identcache 
 *.exe 
 *.bat 
+!Setup/*.bat
 *.dll 
 *.map 
 *.tds 
