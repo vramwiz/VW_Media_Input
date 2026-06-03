@@ -29,7 +29,19 @@ uses
 const
   MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
   SHARED_FRAME_CACHE_CAPACITY = 16;
+  // YUY2をTrueにするとAviUtl2へ渡す映像バッファを16bit/pixelにする。
+  // 従来の32bit BGRxへ戻す場合はFalseに切り替える。
+  USE_YUY2_VIDEO_OUTPUT = True;
+  BI_YUY2 = $32595559; // 'YUY2'
+{$IFDEF DEBUG}
   DECODE_TRACE_ENABLED = True;
+  // Trueにすると入力を開くたびにデコードログをクリアする。
+  // 過去ログを残して比較したい場合はFalseに切り替える。
+  CLEAR_DECODE_TRACE_ON_OPEN = True;
+{$ELSE}
+  DECODE_TRACE_ENABLED = False;
+  CLEAR_DECODE_TRACE_ON_OPEN = False;
+{$ENDIF}
 
 type
   PFileContext = ^TFileContext;
@@ -69,6 +81,32 @@ var
   ReusableDecoderInfo: TVideoInfo;
   ReusableDecoderLastFrame: Integer;
 
+function DecodeTraceLogFileName: string;
+begin
+  Result := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
+end;
+
+procedure ClearDecodeTraceLog(const Reason: string);
+var
+  F: TextFile;
+  LogFileName: string;
+  Line: string;
+begin
+  if (not DECODE_TRACE_ENABLED) or (not CLEAR_DECODE_TRACE_ON_OPEN) then
+    Exit;
+
+  LogFileName := DecodeTraceLogFileName;
+  Line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' [PluginInputBase] log_clear ' + Reason;
+  OutputDebugString(PChar(Line));
+  AssignFile(F, LogFileName);
+  try
+    Rewrite(F);
+    Writeln(F, Line);
+  finally
+    CloseFile(F);
+  end;
+end;
+
 procedure DecodeTrace(const Msg: string);
 var
   F: TextFile;
@@ -80,7 +118,7 @@ begin
 
   Line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' [PluginInputBase] ' + Msg;
   OutputDebugString(PChar(Line));
-  LogFileName := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
+  LogFileName := DecodeTraceLogFileName;
   AssignFile(F, LogFileName);
   try
     if FileExists(LogFileName) then
@@ -265,33 +303,67 @@ begin
   Scale := Scale div Divisor;
 end;
 
+function VideoBytesPerPixel: Integer;
+begin
+  if USE_YUY2_VIDEO_OUTPUT then
+    Result := 2
+  else
+    Result := 4;
+end;
+
+function VideoStride(const Ctx: PFileContext): Integer;
+begin
+  Result := Ctx^.Width * VideoBytesPerPixel;
+end;
+
+function VideoImageSize(const Ctx: PFileContext): Integer;
+begin
+  Result := VideoStride(Ctx) * Ctx^.Height;
+end;
+
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
 var
   Ctx: PFileContext;
   VideoInfo: TVideoInfo;
   ErrorMessage: string;
   AudioErrorMessage: string;
+{$IFDEF DEBUG}
   ReusedDecoder: Boolean;
+{$ENDIF}
 begin
   Result := nil;
   AudioErrorMessage := '';
+{$IFDEF DEBUG}
   ReusedDecoder := False;
+{$ENDIF}
   New(Ctx);
   FillChar(Ctx^, SizeOf(Ctx^), 0);
 
   try
     Ctx^.FileName := string(fileName);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      ClearDecodeTraceLog(Format('file="%s"', [Ctx^.FileName]));
+{$ENDIF}
     Ctx^.LastDecodedFrame := -1;
 
     if TryTakeReusableDecoder(Ctx^.FileName, Ctx^.Decoder, VideoInfo, Ctx^.LastDecodedFrame) then
-      ReusedDecoder := True
+    begin
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        ReusedDecoder := True;
+{$ENDIF}
+    end
     else
     begin
       Ctx^.Decoder := TFFmpegDecoder.Create;
       if not Ctx^.Decoder.Open(Ctx^.FileName, VideoInfo, ErrorMessage) then
       begin
         Ctx^.LastError := ErrorMessage;
-        DecodeTrace(Format('open failed file="%s" err=%s', [Ctx^.FileName, ErrorMessage]));
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+          DecodeTrace(Format('open failed file="%s" err=%s', [Ctx^.FileName, ErrorMessage]));
+{$ENDIF}
         FreeFileContext(Ctx);
         Exit;
       end;
@@ -317,9 +389,17 @@ begin
         Ctx^.Info.biWidth := Ctx^.Width;
         Ctx^.Info.biHeight := Ctx^.Height;
         Ctx^.Info.biPlanes := 1;
-        Ctx^.Info.biBitCount := 32;
-        Ctx^.Info.biCompression := BI_RGB;
-        Ctx^.Info.biSizeImage := Ctx^.Width * Ctx^.Height * 4;
+        if USE_YUY2_VIDEO_OUTPUT then
+        begin
+          Ctx^.Info.biBitCount := 16;
+          Ctx^.Info.biCompression := BI_YUY2;
+        end
+        else
+        begin
+          Ctx^.Info.biBitCount := 32;
+          Ctx^.Info.biCompression := BI_RGB;
+        end;
+        Ctx^.Info.biSizeImage := VideoImageSize(Ctx);
       end;
 
       if VideoInfo.Audio.Present then
@@ -335,10 +415,13 @@ begin
       else
         Ctx^.LastError := AudioErrorMessage;
 
-      DecodeTrace(Format('open ok file="%s" reused=%s last=%d width=%d height=%d duration=%.3f fps=%.6f frames=%d audio=%s audio_err=%s',
-        [Ctx^.FileName, BoolToStr(ReusedDecoder, True), Ctx^.LastDecodedFrame,
-         Ctx^.Width, Ctx^.Height, Ctx^.DurationSec, VideoInfo.Fps,
-         Ctx^.FrameCount, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage]));
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        DecodeTrace(Format('open ok file="%s" reused=%s last=%d width=%d height=%d duration=%.3f fps=%.6f frames=%d audio=%s audio_err=%s',
+          [Ctx^.FileName, BoolToStr(ReusedDecoder, True), Ctx^.LastDecodedFrame,
+           Ctx^.Width, Ctx^.Height, Ctx^.DurationSec, VideoInfo.Fps,
+           Ctx^.FrameCount, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage]));
+{$ENDIF}
 
       Result := Ctx;
       Ctx := nil;
@@ -401,7 +484,9 @@ var
   Decoded: Boolean;
   FrameGap: Integer;
   ForwardFrame: Integer;
+{$IFDEF DEBUG}
   StartTick: TStopwatch;
+{$ENDIF}
   DecodeRoute: string;
 begin
   Result := 0;
@@ -414,26 +499,35 @@ begin
 
   if frame < 0 then
     frame := 0;
-  ImageSize := Ctx^.Info.biSizeImage;
+  ImageSize := VideoImageSize(Ctx);
 
   if (frame = Ctx^.LastDecodedFrame) and (Length(Ctx^.CachedFrame) = ImageSize) then
   begin
     Move(Ctx^.CachedFrame[0], buf^, ImageSize);
-    DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=0 route=cache bytes=%d',
-      [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, ImageSize]));
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=0 route=cache bytes=%d',
+        [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, ImageSize]));
+{$ENDIF}
     Result := ImageSize;
     Exit;
   end;
 
   if TryReadSharedFrameCache(Ctx^.FileName, frame, ImageSize, buf) then
   begin
-    DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=shared_cache bytes=%d',
-      [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, frame - Ctx^.LastDecodedFrame, ImageSize]));
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=shared_cache bytes=%d',
+        [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, frame - Ctx^.LastDecodedFrame, ImageSize]));
+{$ENDIF}
     Result := ImageSize;
     Exit;
   end;
 
-  StartTick := TStopwatch.StartNew;
+{$IFDEF DEBUG}
+  if DECODE_TRACE_ENABLED then
+    StartTick := TStopwatch.StartNew;
+{$ENDIF}
   DecodeRoute := '';
   FrameGap := frame - Ctx^.LastDecodedFrame;
   if (Ctx^.LastDecodedFrame >= 0) and (FrameGap > 0) and (FrameGap <= MAX_FORWARD_DECODE_GAP) then
@@ -442,24 +536,40 @@ begin
     Decoded := True;
     for ForwardFrame := Ctx^.LastDecodedFrame + 1 to frame do
     begin
-      Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32Optional(buf, Ctx^.Width * 4,
-        ForwardFrame = frame, PositionMsOut, ErrorMessage);
+      if USE_YUY2_VIDEO_OUTPUT then
+        Decoded := Ctx^.Decoder.DecodeNextFrameToYuy2Optional(buf, VideoStride(Ctx),
+          ForwardFrame = frame, PositionMsOut, ErrorMessage)
+      else
+        Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32Optional(buf, VideoStride(Ctx),
+          ForwardFrame = frame, PositionMsOut, ErrorMessage);
       if not Decoded then
         Break;
     end;
-    PositionMs := PositionMsOut;
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      PositionMs := PositionMsOut;
+{$ENDIF}
   end
   else
   begin
     DecodeRoute := 'seek';
     PositionMs := Round(frame * Ctx^.Scale * 1000.0 / Ctx^.Rate);
-    Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, Ctx^.Width * 4, ErrorMessage);
+    if USE_YUY2_VIDEO_OUTPUT then
+      Decoded := Ctx^.Decoder.DecodeFrameToYuy2(PositionMs, buf, VideoStride(Ctx), ErrorMessage)
+    else
+      Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
   end;
-  StartTick.Stop;
+{$IFDEF DEBUG}
+  if DECODE_TRACE_ENABLED then
+    StartTick.Stop;
+{$ENDIF}
 
-  DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=%s ok=%s elapsed_ms=%.3f image_size=%d pos_ms=%d err=%s',
-    [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute, BoolToStr(Decoded, True),
-     StartTick.Elapsed.TotalMilliseconds, ImageSize, PositionMs, ErrorMessage]));
+{$IFDEF DEBUG}
+  if DECODE_TRACE_ENABLED then
+    DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=%s ok=%s elapsed_ms=%.3f image_size=%d pos_ms=%d err=%s',
+      [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute, BoolToStr(Decoded, True),
+       StartTick.Elapsed.TotalMilliseconds, ImageSize, PositionMs, ErrorMessage]));
+{$ENDIF}
 
   if not Decoded then
   begin

@@ -314,3 +314,71 @@ zip 内容:
 - zip の配置場所は `releases` ではなく `Setup` フォルダとする。
 - 現時点の zip は Debug ビルド由来。正式配布時は Release ビルドで作り直すか検討する。
 
+## 2026-06-03 YUY2 映像出力テスト
+
+aviutl2 への映像渡しを 32bit BGRx から YUY2 に切り替えられるようにした。
+
+切替位置:
+
+- `Plugin_Input\PluginInputBase.pas`
+- `USE_YUY2_VIDEO_OUTPUT = True`
+
+戻し方:
+
+- `USE_YUY2_VIDEO_OUTPUT = False` にすると従来の 32bit BGRx / `BI_RGB` 出力に戻る。
+
+YUY2 有効時:
+
+- `BITMAPINFOHEADER.biCompression = 'YUY2'`
+- `BITMAPINFOHEADER.biBitCount = 16`
+- `biSizeImage = width * height * 2`
+- デコードログには `seek_decode_yuy2` / `next_decode_yuy2` が出る。
+
+ログクリア:
+
+- Debugビルドでは `Plugin_Input\PluginInputBase.pas` の `CLEAR_DECODE_TRACE_ON_OPEN = True` により、入力を開くたびに `%TEMP%\VW_Media_Input_decode.log` を作り直す。
+- 過去ログを残して比較したい場合は `CLEAR_DECODE_TRACE_ON_OPEN = False` にする。
+- クリアされたログの先頭には `log_clear file="..."` が出る。
+
+狙い:
+
+- aviutl2 へ渡す映像バッファ量を 32bit の半分にして、コピー量と変換後バッファ量を減らす。
+
+注意:
+
+- 色味、上下方向、aviutl2 側での YUY2 受け取りが問題ないかを実機で確認する。
+- 問題が出た場合は `USE_YUY2_VIDEO_OUTPUT = False` で即座に従来経路へ戻せる。
+
+上下方向修正:
+
+- AviUtl2上でYUY2出力が上下逆になったため、`CopyFrameToYuy2Buffer` はトップダウン書き込みに変更した。
+- BGRx32経路は従来どおりボトムアップのまま。
+
+整理:
+
+- 文字化けコメント行の影響で `FFmpegFrameConvert.pas` のYUY2実装が重複し、BGRx側へ誤ってトップダウン指定が入っていた。
+- `FFmpegFrameConvert.pas` を整理し直し、`CopyFrameToBgrx32Buffer` と `CopyFrameToYuy2Buffer` を1実装ずつにした。
+- 現在は BGRx32 = ボトムアップ、YUY2 = トップダウン。
+
+## 2026-06-03 Debug専用ログ/計測の整理
+
+Releaseビルドおよび `DECODE_TRACE_ENABLED = False` 時に、ログ用の重い処理が残らないよう整理した。
+
+対象:
+
+- `DecodeTrace(Format(...))` の文字列生成
+- `read_packets` / `video_packets` / `decoded_frames` のログ用カウント
+- `TStopwatch` によるログ用時間計測
+- `UpdateVideoLoadStats` のログ/確認用更新
+
+方針:
+
+- `{$IFDEF DEBUG}` でDebugビルド時のみログ処理を含める。
+- Debugビルド内でも `DECODE_TRACE_ENABLED = False` なら `Format(...)` や `TStopwatch.StartNew` を実行しない。
+- Releaseビルドではログ用処理をコンパイル対象から外す。
+
+ビルド確認:
+
+- Win64 Release: 成功。
+- Win64 Debug: `Win64\Debug_check` 出力で成功。
+
