@@ -462,3 +462,77 @@ YUY2入力高速化とデバッグログ整理に関係するユニット:
 - 最初に試すなら、元の `YUV420P` に近い `I420` が軽そう。
 - `NV12` は出力エンコード側に近いが、Y/U/V から UV インターリーブへの詰め替えが必要。
 
+## 2026-06-04 YC48 直接出力テスト
+
+`sws_scale` による `YUV420P -> BGRx32` 変換を避けるため、AviUtl2 寄りの `YC48` 出力を試す。
+
+変更内容:
+
+- `Plugin_Input\PluginInputBase.pas`
+  - `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_YC48` に変更。
+  - AviUtl2 へ `biCompression = 'YC48'`、`biBitCount = 48`、`biSizeImage = width * height * 6` を返す。
+- `Plugin_Input\FFmpegFrameConvert.pas`
+  - `YUV420P -> YC48` の自前変換で、Y/Cb/Cr の値変換を初期化時のルックアップテーブル化。
+  - フレームごとの除算を避け、`sws_scale` を使わない経路の負荷を下げる。
+
+狙い:
+
+- AviUtl2 が対応している `YC48` 形式へ寄せる。
+- RGB変換を避け、FFmpegデコード後の変換コストを下げる。
+
+確認ポイント:
+
+- AviUtl2上で正しく表示されるか。
+- 色味が大きく崩れないか。
+- `%TEMP%\VW_Media_Input_decode.log` の `next_decode_yc48` / `read_video forward` が BGRx32 より改善するか。
+
+戻し方:
+
+- `Plugin_Input\PluginInputBase.pas` の `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32` に戻す。
+
+結果:
+
+- 貼り付けログ 25 フレーム分では `next_decode_yc48 convert_ms avg` 約 `14.901ms`。
+- `read_video forward avg` 約 `15.452ms`。
+- BGRx32 の約 5ms 前後より大幅に遅い。
+- `image_size=12441600` で 1920x1080 の 48bit 出力になり、書き込み量が大きすぎる。
+- YC48 は今回の高速化目的では不採用。
+
+## 2026-06-04 I420 直接出力テスト
+
+YC48 が遅かったため、さらに踏み込んで `I420` 直接出力を試す。
+
+変更内容:
+
+- `Plugin_Input\PluginInputBase.pas`
+  - `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_I420` に変更。
+  - AviUtl2 へ `biCompression = 'I420'`、`biBitCount = 12` を返す。
+
+狙い:
+
+- 入力フレームが `AV_PIX_FMT_YUV420P` の場合、`sws_scale` を使わず Y/U/V plane コピーだけにする。
+- 1920x1080 なら出力サイズは約 3.1MB になり、BGRx32 の約 8.3MB、YC48 の約 12.4MB より小さい。
+
+注意:
+
+- `AviUtl2InputTypes.pas` のコメント上は `I420` が対応形式として明記されていないため、AviUtl2 が受け付けるかは実機確認が必要。
+- 表示不可、黒画面、色崩れが出る可能性がある。
+
+確認ポイント:
+
+- AviUtl2上で開けるか。
+- 映像が正しい向き・色で表示されるか。
+- `%TEMP%\VW_Media_Input_decode.log` の `next_decode_i420` / `read_video forward` が BGRx32 より改善するか。
+
+ビルド状況:
+
+- Win64 Debug のコンパイル自体は成功。
+- post-build の `.dll -> .aui2` コピーで、`C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.aui2` が使用中のため失敗。
+- AviUtl2 などがプラグインを掴んでいる可能性があるため、対象アプリを閉じてから再ビルドする。
+
+結果:
+
+- AviUtl2 上で「このファイルは対応していません」と表示され、入力形式として受け付けられなかった。
+- `AviUtl2InputTypes.pas` のコメント上も `I420` は対応形式に明記されていないため、I420 直接出力は不採用。
+- いったん `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32` へ戻す。
+
