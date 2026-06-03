@@ -5,6 +5,7 @@ interface
 uses
   Vcl.Graphics, FFmpegApi;
 
+// AVFrameをAviUtl2向け32bit BGRxバッファへ変換する。
 procedure CopyFrameToBgrx32Buffer(
   Frame: PAVFrame;
   Buffer: Pointer;
@@ -16,6 +17,7 @@ procedure CopyFrameToBgrx32Buffer(
   var CachedDstFormat: Integer
 );
 
+// AVFrameをAviUtl2向けYUY2バッファへ変換する。
 procedure CopyFrameToYuy2Buffer(
   Frame: PAVFrame;
   Buffer: Pointer;
@@ -27,6 +29,7 @@ procedure CopyFrameToYuy2Buffer(
   var CachedDstFormat: Integer
 );
 
+// AVFrameをデバッグ表示用TBitmapへ変換する。
 procedure CopyFrameToBitmap(Frame: PAVFrame; Bitmap: TBitmap);
 
 implementation
@@ -34,6 +37,7 @@ implementation
 uses
   System.SysUtils;
 
+// 変換元フレームと出力バッファの基本条件を確認する。
 procedure EnsureFrameAndBuffer(Frame: PAVFrame; Buffer: Pointer);
 begin
   if (Frame = nil) or (Frame.width <= 0) or (Frame.height <= 0) then
@@ -42,6 +46,7 @@ begin
     raise Exception.Create('Destination buffer is nil.');
 end;
 
+// sws_scale用コンテキストを入力/出力形式ごとに再利用する。
 procedure EnsureSwsContext(
   Frame: PAVFrame;
   DstFormat: Integer;
@@ -76,6 +81,7 @@ begin
     raise Exception.Create('sws_getContext failed.');
 end;
 
+// AVFrameをAviUtl2向け32bit BGRxバッファへ変換する。
 procedure CopyFrameToBgrx32Buffer(
   Frame: PAVFrame;
   Buffer: Pointer;
@@ -87,9 +93,9 @@ procedure CopyFrameToBgrx32Buffer(
   var CachedDstFormat: Integer
 );
 var
-  DstData: array[0..3] of PByte;
-  DstLinesize: array[0..3] of Integer;
-  DstFormat: Integer;
+  DstData: array[0..3] of PByte; // sws_scaleへ渡す出力プレーン
+  DstLinesize: array[0..3] of Integer; // sws_scaleへ渡す出力ラインサイズ
+  DstFormat: Integer; // FFmpegの出力ピクセル形式
 begin
   EnsureFrameAndBuffer(Frame, Buffer);
   if BufferStride <= 0 then
@@ -99,7 +105,7 @@ begin
   FillChar(DstData, SizeOf(DstData), 0);
   FillChar(DstLinesize, SizeOf(DstLinesize), 0);
 
-  // Keep the existing BGRx path bottom-up for positive BITMAPINFOHEADER height.
+  // 正のBITMAPINFOHEADER高さに合わせてBGRxはボトムアップで渡す。
   DstData[0] := PByte(NativeUInt(Buffer) + NativeUInt((Frame.height - 1) * BufferStride));
   DstLinesize[0] := -BufferStride;
 
@@ -111,6 +117,7 @@ begin
     raise Exception.Create('sws_scale failed.');
 end;
 
+// AVFrameをAviUtl2向けYUY2バッファへ変換する。
 procedure CopyFrameToYuy2Buffer(
   Frame: PAVFrame;
   Buffer: Pointer;
@@ -122,9 +129,9 @@ procedure CopyFrameToYuy2Buffer(
   var CachedDstFormat: Integer
 );
 var
-  DstData: array[0..3] of PByte;
-  DstLinesize: array[0..3] of Integer;
-  DstFormat: Integer;
+  DstData: array[0..3] of PByte; // sws_scaleへ渡す出力プレーン
+  DstLinesize: array[0..3] of Integer; // sws_scaleへ渡す出力ラインサイズ
+  DstFormat: Integer; // FFmpegの出力ピクセル形式
 begin
   EnsureFrameAndBuffer(Frame, Buffer);
   if BufferStride <= 0 then
@@ -134,7 +141,7 @@ begin
   FillChar(DstData, SizeOf(DstData), 0);
   FillChar(DstLinesize, SizeOf(DstLinesize), 0);
 
-  // AviUtl2 YUY2 input is passed in display order from the first scanline.
+  // AviUtl2のYUY2入力は表示順の先頭行から渡す。
   DstData[0] := PByte(Buffer);
   DstLinesize[0] := BufferStride;
 
@@ -146,12 +153,13 @@ begin
     raise Exception.Create('sws_scale failed.');
 end;
 
+// AVFrameをデバッグ表示用TBitmapへ変換する。
 procedure CopyFrameToBitmap(Frame: PAVFrame; Bitmap: TBitmap);
 var
-  ScaleContext: PSwsContext;
-  DstData: array[0..3] of PByte;
-  DstLinesize: array[0..3] of Integer;
-  Stride: NativeInt;
+  ScaleContext: PSwsContext; // Bitmap変換専用の一時swsコンテキスト
+  DstData: array[0..3] of PByte; // sws_scaleへ渡すBitmap側プレーン
+  DstLinesize: array[0..3] of Integer; // Bitmap側ラインサイズ
+  Stride: NativeInt; // BitmapのScanLine間隔
 begin
   if (Frame = nil) or (Frame.width <= 0) or (Frame.height <= 0) then
     raise Exception.Create('Decoded frame has invalid size.');

@@ -28,19 +28,15 @@ uses
 
 const
   MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
-  SHARED_FRAME_CACHE_CAPACITY = 16;
-  // YUY2をTrueにするとAviUtl2へ渡す映像バッファを16bit/pixelにする。
-  // 従来の32bit BGRxへ戻す場合はFalseに切り替える。
-  USE_YUY2_VIDEO_OUTPUT = True;
+  SHARED_FRAME_CACHE_CAPACITY = 16; // ファイル間共有フレームキャッシュの最大保持数
+  USE_YUY2_VIDEO_OUTPUT = True; // TrueでYUY2、Falseで従来の32bit BGRxへ戻す
   BI_YUY2 = $32595559; // 'YUY2'
 {$IFDEF DEBUG}
-  DECODE_TRACE_ENABLED = True;
-  // Trueにすると入力を開くたびにデコードログをクリアする。
-  // 過去ログを残して比較したい場合はFalseに切り替える。
-  CLEAR_DECODE_TRACE_ON_OPEN = True;
+  DECODE_TRACE_ENABLED = True; // Debug時だけデコードログ/計測を有効にする
+  CLEAR_DECODE_TRACE_ON_OPEN = True; // Trueで入力open時にデコードログを作り直す
 {$ELSE}
-  DECODE_TRACE_ENABLED = False;
-  CLEAR_DECODE_TRACE_ON_OPEN = False;
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成や計測を含めない
+  CLEAR_DECODE_TRACE_ON_OPEN = False; // Releaseではログクリアもしない
 {$ENDIF}
 
 type
@@ -65,27 +61,29 @@ type
   end;
 
   TSharedFrameCacheEntry = record
-    FileName: string;
-    Frame: Integer;
-    ImageSize: Integer;
-    Data: TBytes;
-    LastUsed: UInt64;
+    FileName: string; // キャッシュ元ファイル名
+    Frame: Integer; // キャッシュしたフレーム番号
+    ImageSize: Integer; // キャッシュした映像バッファサイズ
+    Data: TBytes; // AviUtl2へ返した映像データ
+    LastUsed: UInt64; // LRU判定用の利用順カウンタ
   end;
 
 var
-  SharedFrameCache: array[0..SHARED_FRAME_CACHE_CAPACITY - 1] of TSharedFrameCacheEntry;
-  SharedFrameCacheClock: UInt64;
-  SharedFrameCacheLock: TCriticalSection;
-  ReusableDecoder: TFFmpegDecoder;
-  ReusableDecoderFileName: string;
-  ReusableDecoderInfo: TVideoInfo;
-  ReusableDecoderLastFrame: Integer;
+  SharedFrameCache: array[0..SHARED_FRAME_CACHE_CAPACITY - 1] of TSharedFrameCacheEntry; // 複数open間で再利用する映像フレームキャッシュ
+  SharedFrameCacheClock: UInt64; // 共有キャッシュのLRU順序カウンタ
+  SharedFrameCacheLock: TCriticalSection; // 共有キャッシュ保護用ロック
+  ReusableDecoder: TFFmpegDecoder; // close直後に次openへ引き渡すデコーダ
+  ReusableDecoderFileName: string; // 再利用デコーダが開いているファイル名
+  ReusableDecoderInfo: TVideoInfo; // 再利用デコーダの動画情報
+  ReusableDecoderLastFrame: Integer; // 再利用デコーダの最後に読んだフレーム
 
+// デコードログの出力先ファイル名を返す。
 function DecodeTraceLogFileName: string;
 begin
   Result := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
 end;
 
+// 入力openごとのデコードログを初期化する。
 procedure ClearDecodeTraceLog(const Reason: string);
 var
   F: TextFile;
@@ -107,6 +105,7 @@ begin
   end;
 end;
 
+// Debug時のデコードログをTEMPへ追記する。
 procedure DecodeTrace(const Msg: string);
 var
   F: TextFile;
@@ -303,6 +302,7 @@ begin
   Scale := Scale div Divisor;
 end;
 
+// 現在の映像出力形式に応じた1ピクセルあたりのバイト数を返す。
 function VideoBytesPerPixel: Integer;
 begin
   if USE_YUY2_VIDEO_OUTPUT then
@@ -311,11 +311,13 @@ begin
     Result := 4;
 end;
 
+// AviUtl2へ返す1ラインあたりのバイト数を返す。
 function VideoStride(const Ctx: PFileContext): Integer;
 begin
   Result := Ctx^.Width * VideoBytesPerPixel;
 end;
 
+// AviUtl2へ返す1フレームあたりのバイト数を返す。
 function VideoImageSize(const Ctx: PFileContext): Integer;
 begin
   Result := VideoStride(Ctx) * Ctx^.Height;

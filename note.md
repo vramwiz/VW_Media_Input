@@ -382,3 +382,23 @@ Releaseビルドおよび `DECODE_TRACE_ENABLED = False` 時に、ログ用の�
 - Win64 Release: 成功。
 - Win64 Debug: `Win64\Debug_check` 出力で成功。
 
+## 関連ユニットの目的
+
+YUY2入力高速化とデバッグログ整理に関係するユニット:
+
+- `Plugin_Input\PluginInputBase.pas`
+  - AviUtl2入力プラグインとしてのopen/get_info/read_video/read_audioを担当する。
+  - `USE_YUY2_VIDEO_OUTPUT` でAviUtl2へ返す映像形式をYUY2/BGRx32で切り替える。
+  - Debug時のログクリア、`read_video` 経路ログ、共有フレームキャッシュを管理する。
+- `Plugin_Input\FFmpegDecoder.pas`
+  - FFmpegのopen/seek/next decodeを担当する。
+  - AviUtl2向けの直接出力経路としてBGRx32/YUY2の両方を持つ。
+  - Debug時のみデコード時間、変換時間、packet/frame数をログへ出す。
+- `Plugin_Input\FFmpegFrameConvert.pas`
+  - `sws_scale` によるAVFrameから出力バッファへのピクセル形式変換を担当する。
+  - BGRx32は正の`BITMAPINFOHEADER.biHeight`向けにボトムアップで渡す。
+  - YUY2はAviUtl2上で正しい上下方向になるようトップダウンで渡す。
+- `Plugin_Input\FFmpegApi.pas`
+  - FFmpeg DLL関数と必要な定数の宣言を担当する。
+  - YUY2出力用に `AV_PIX_FMT_YUYV422 = 1` を定義する。
+
