@@ -29,7 +29,10 @@ uses
 const
   MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
   SHARED_FRAME_CACHE_CAPACITY = 16; // ファイル間共有フレームキャッシュの最大保持数
-  USE_YUY2_VIDEO_OUTPUT = False; // TrueでYUY2、Falseで従来の32bit BGRxへ戻す
+  VIDEO_OUTPUT_BGRX32 = 0;
+  VIDEO_OUTPUT_BGR24 = 1;
+  VIDEO_OUTPUT_YUY2 = 2;
+  VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32;
   BI_YUY2 = $32595559; // 'YUY2'
 {$IFDEF DEBUG}
   DECODE_TRACE_ENABLED = True; // Debug時だけデコードログ/計測を有効にする
@@ -318,16 +321,22 @@ end;
 // 現在の映像出力形式に応じた1ピクセルあたりのバイト数を返す。
 function VideoBytesPerPixel: Integer;
 begin
-  if USE_YUY2_VIDEO_OUTPUT then
-    Result := 2
+  case VIDEO_OUTPUT_FORMAT of
+    VIDEO_OUTPUT_BGR24:
+      Result := 3;
+    VIDEO_OUTPUT_YUY2:
+      Result := 2;
   else
     Result := 4;
+  end;
 end;
 
 // AviUtl2へ返す1ラインあたりのバイト数を返す。
 function VideoStride(const Ctx: PFileContext): Integer;
 begin
   Result := Ctx^.Width * VideoBytesPerPixel;
+  if VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGR24 then
+    Result := ((Result + 3) div 4) * 4;
 end;
 
 // AviUtl2へ返す1フレームあたりのバイト数を返す。
@@ -404,15 +413,22 @@ begin
         Ctx^.Info.biWidth := Ctx^.Width;
         Ctx^.Info.biHeight := Ctx^.Height;
         Ctx^.Info.biPlanes := 1;
-        if USE_YUY2_VIDEO_OUTPUT then
-        begin
-          Ctx^.Info.biBitCount := 16;
-          Ctx^.Info.biCompression := BI_YUY2;
-        end
+        case VIDEO_OUTPUT_FORMAT of
+          VIDEO_OUTPUT_BGR24:
+          begin
+            Ctx^.Info.biBitCount := 24;
+            Ctx^.Info.biCompression := BI_RGB;
+          end;
+          VIDEO_OUTPUT_YUY2:
+          begin
+            Ctx^.Info.biBitCount := 16;
+            Ctx^.Info.biCompression := BI_YUY2;
+          end;
         else
         begin
           Ctx^.Info.biBitCount := 32;
           Ctx^.Info.biCompression := BI_RGB;
+        end;
         end;
         Ctx^.Info.biSizeImage := VideoImageSize(Ctx);
       end;
@@ -551,12 +567,17 @@ begin
     Decoded := True;
     for ForwardFrame := Ctx^.LastDecodedFrame + 1 to frame do
     begin
-      if USE_YUY2_VIDEO_OUTPUT then
-        Decoded := Ctx^.Decoder.DecodeNextFrameToYuy2Optional(buf, VideoStride(Ctx),
-          ForwardFrame = frame, PositionMsOut, ErrorMessage)
+      case VIDEO_OUTPUT_FORMAT of
+        VIDEO_OUTPUT_BGR24:
+          Decoded := Ctx^.Decoder.DecodeNextFrameToBgr24Optional(buf, VideoStride(Ctx),
+            ForwardFrame = frame, PositionMsOut, ErrorMessage);
+        VIDEO_OUTPUT_YUY2:
+          Decoded := Ctx^.Decoder.DecodeNextFrameToYuy2Optional(buf, VideoStride(Ctx),
+            ForwardFrame = frame, PositionMsOut, ErrorMessage);
       else
         Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32Optional(buf, VideoStride(Ctx),
           ForwardFrame = frame, PositionMsOut, ErrorMessage);
+      end;
       if not Decoded then
         Break;
     end;
@@ -569,10 +590,14 @@ begin
   begin
     DecodeRoute := 'seek';
     PositionMs := Round(frame * Ctx^.Scale * 1000.0 / Ctx^.Rate);
-    if USE_YUY2_VIDEO_OUTPUT then
-      Decoded := Ctx^.Decoder.DecodeFrameToYuy2(PositionMs, buf, VideoStride(Ctx), ErrorMessage)
+    case VIDEO_OUTPUT_FORMAT of
+      VIDEO_OUTPUT_BGR24:
+        Decoded := Ctx^.Decoder.DecodeFrameToBgr24(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
+      VIDEO_OUTPUT_YUY2:
+        Decoded := Ctx^.Decoder.DecodeFrameToYuy2(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
     else
       Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
+    end;
   end;
 {$IFDEF DEBUG}
   if DECODE_TRACE_ENABLED then
