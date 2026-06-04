@@ -1,16 +1,16 @@
 unit FFmpegDecodeStats;
 
-// FFmpegデコード処理の負荷統計と音声PCMの確認用統計を更新する補助ユニット。
-// デコーダ本体が持つ統計recordの計算処理をここへ集約する。
-
 interface
 
 uses
   System.SysUtils, FFmpegDecoderTypes;
 
-// 映像デコードと色変換にかかった時間の統計を更新する。
+// 映像処理合計時間の統計を更新する。
 procedure UpdateVideoLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
-// 音声パケット処理にかかった時間の統計を更新する。
+// 映像処理時間をdecode/transfer/convertへ分けて統計更新する。
+procedure UpdateVideoStageStats(var Stats: TDecodeLoadStats; TotalMs, DecodeMs,
+  TransferMs, ConvertMs: Double);
+// 音声処理時間の統計を更新する。
 procedure UpdateAudioLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
 // PCMデータから音量確認用の統計を更新する。
 procedure UpdateAudioPlaybackStats(var Stats: TAudioPlaybackStats; const Pcm: TBytes;
@@ -21,29 +21,47 @@ implementation
 uses
   System.Math;
 
-// 映像デコードと色変換にかかった時間の統計を更新する。
+// 直近値、移動平均、最大値をまとめて更新する。
+procedure UpdateMovingMax(var LastMs, AverageMs, MaxMs: Double; Count: Int64;
+  ElapsedMs: Double);
+begin
+  LastMs := ElapsedMs;
+  if Count = 0 then
+    AverageMs := ElapsedMs
+  else
+    AverageMs := (AverageMs * 0.9) + (ElapsedMs * 0.1);
+  if ElapsedMs > MaxMs then
+    MaxMs := ElapsedMs;
+end;
+
+// 映像処理合計時間の統計を更新する。
 procedure UpdateVideoLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
 begin
-  Stats.VideoLastMs := ElapsedMs;
-  if Stats.VideoFrames = 0 then
-    Stats.VideoAverageMs := ElapsedMs
-  else
-    Stats.VideoAverageMs := (Stats.VideoAverageMs * 0.9) + (ElapsedMs * 0.1);
-  if ElapsedMs > Stats.VideoMaxMs then
-    Stats.VideoMaxMs := ElapsedMs;
+  UpdateMovingMax(Stats.VideoLastMs, Stats.VideoAverageMs, Stats.VideoMaxMs,
+    Stats.VideoFrames, ElapsedMs);
   Inc(Stats.VideoFrames);
 end;
 
-// 音声パケット処理にかかった時間の統計を更新する。
+// 映像処理時間をdecode/transfer/convertへ分けて統計更新する。
+procedure UpdateVideoStageStats(var Stats: TDecodeLoadStats; TotalMs, DecodeMs,
+  TransferMs, ConvertMs: Double);
+begin
+  UpdateMovingMax(Stats.VideoLastMs, Stats.VideoAverageMs, Stats.VideoMaxMs,
+    Stats.VideoFrames, TotalMs);
+  UpdateMovingMax(Stats.VideoDecodeLastMs, Stats.VideoDecodeAverageMs,
+    Stats.VideoDecodeMaxMs, Stats.VideoFrames, DecodeMs);
+  UpdateMovingMax(Stats.VideoTransferLastMs, Stats.VideoTransferAverageMs,
+    Stats.VideoTransferMaxMs, Stats.VideoFrames, TransferMs);
+  UpdateMovingMax(Stats.VideoConvertLastMs, Stats.VideoConvertAverageMs,
+    Stats.VideoConvertMaxMs, Stats.VideoFrames, ConvertMs);
+  Inc(Stats.VideoFrames);
+end;
+
+// 音声処理時間の統計を更新する。
 procedure UpdateAudioLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
 begin
-  Stats.AudioLastMs := ElapsedMs;
-  if Stats.AudioPackets = 0 then
-    Stats.AudioAverageMs := ElapsedMs
-  else
-    Stats.AudioAverageMs := (Stats.AudioAverageMs * 0.9) + (ElapsedMs * 0.1);
-  if ElapsedMs > Stats.AudioMaxMs then
-    Stats.AudioMaxMs := ElapsedMs;
+  UpdateMovingMax(Stats.AudioLastMs, Stats.AudioAverageMs, Stats.AudioMaxMs,
+    Stats.AudioPackets, ElapsedMs);
   Inc(Stats.AudioPackets);
 end;
 
@@ -51,13 +69,13 @@ end;
 procedure UpdateAudioPlaybackStats(var Stats: TAudioPlaybackStats; const Pcm: TBytes;
   SampleCount: Integer; PtsMs: Integer; QueuedBuffers: Integer);
 var
-  I: Integer; // PCMサンプル走査用のインデックス
-  Value: SmallInt; // 現在確認中の16bit PCM値
-  AbsValue: Integer; // PCM値の絶対値
-  Peak: Integer; // このPCMブロック内の最大振幅
-  NonZero: Integer; // 0以外のPCM値の個数
-  SumSquares: Double; // RMS計算用の二乗和
-  TotalValues: Integer; // PCM値の総数
+  I: Integer;
+  Value: SmallInt;
+  AbsValue: Integer;
+  Peak: Integer;
+  NonZero: Integer;
+  SumSquares: Double;
+  TotalValues: Integer;
 begin
   TotalValues := Length(Pcm) div SizeOf(SmallInt);
   if TotalValues <= 0 then

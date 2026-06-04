@@ -11,6 +11,7 @@ uses
   FFmpegAudioOpen in 'Plugin_Input\FFmpegAudioOpen.pas',
   FFmpegDecodeStats in 'Plugin_Input\FFmpegDecodeStats.pas',
   FFmpegFrameConvert in 'Plugin_Input\FFmpegFrameConvert.pas',
+  FFmpegQsvDecode in 'Plugin_Input\FFmpegQsvDecode.pas',
   FFmpegStreamInfo in 'Plugin_Input\FFmpegStreamInfo.pas',
   FFmpegDecoder in 'Plugin_Input\FFmpegDecoder.pas',
   PluginAudioInputReader in 'Plugin_Input\PluginAudioInputReader.pas';

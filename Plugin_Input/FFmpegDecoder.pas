@@ -33,6 +33,10 @@ type
     FDecodeStats: TDecodeLoadStats; // デコード負荷確認用の数値
     FPacket: Pointer; // 読み込みに再利用するAVPacket
     FFrame: Pointer; // デコードに再利用するAVFrame
+    FTransferFrame: Pointer; // QSVなどのHW frameをCPUへ転送するAVFrame
+    FQsvDeviceContext: Pointer; // QSV device context
+    FVideoDecoderName: string; // 実際に開いた映像デコーダ名
+    FVideoUsesQsv: Boolean; // QSV decoderを使っているかどうか
     FInfo: TVideoInfo; // 現在開いている動画の基本情報
     FDirectSwsContext: Pointer; // AviUtl2バッファ直接出力用の色変換コンテキスト
     FDirectSwsSrcWidth: Integer; // 直接出力用swsの入力幅
@@ -49,6 +53,8 @@ type
     procedure UpdateAudioStats(const Pcm: TBytes; SampleCount: Integer; PtsMs: Integer);
     // 映像デコード負荷の統計を更新する
     procedure UpdateVideoLoadStats(ElapsedMs: Double);
+    // 映像処理時間をdecode/transfer/convertへ分けて統計更新する
+    procedure UpdateVideoStageStats(TotalMs, DecodeMs, TransferMs, ConvertMs: Double);
     // 音声デコード負荷の統計を更新する
     procedure UpdateAudioLoadStats(ElapsedMs: Double);
   public
@@ -106,7 +112,7 @@ implementation
 
 uses
   FFmpegApi, FFmpegAudioConvert, FFmpegAudioOpen, FFmpegDecodeStats, FFmpegFrameConvert,
-  FFmpegStreamInfo;
+  FFmpegQsvDecode, FFmpegStreamInfo;
 
 const
 {$IFDEF DEBUG}
@@ -165,8 +171,10 @@ var
   FormatContext: PAVFormatContext; // 入力フォーマットコンテキスト解放用の型付きポインタ
   Packet: PAVPacket; // 再利用AVPacket解放用の型付きポインタ
   Frame: PAVFrame; // 映像AVFrame解放用の型付きポインタ
+  TransferFrame: PAVFrame; // HW frame転送用AVFrame解放用の型付きポインタ
   AudioFrame: PAVFrame; // 音声AVFrame解放用の型付きポインタ
   SwrContext: PSwrContext; // 音声変換コンテキスト解放用の型付きポインタ
+  QsvDeviceContext: PAVBufferRef; // QSV device context解放用
 begin
   StopAudioPlayback;
 
@@ -192,6 +200,13 @@ begin
   begin
     TFFmpegApi.av_frame_free(@Frame);
     FFrame := nil;
+  end;
+
+  TransferFrame := PAVFrame(FTransferFrame);
+  if Assigned(TransferFrame) then
+  begin
+    TFFmpegApi.av_frame_free(@TransferFrame);
+    FTransferFrame := nil;
   end;
 
   AudioFrame := PAVFrame(FAudioFrame);
@@ -222,6 +237,13 @@ begin
     FCodecContext := nil;
   end;
 
+  QsvDeviceContext := PAVBufferRef(FQsvDeviceContext);
+  if Assigned(QsvDeviceContext) then
+  begin
+    TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
+    FQsvDeviceContext := nil;
+  end;
+
   FormatContext := PAVFormatContext(FFormatContext);
   if Assigned(FormatContext) then
   begin
@@ -232,6 +254,8 @@ begin
   FFileName := '';
   FStream := nil;
   FStreamIndex := -1;
+  FVideoDecoderName := '';
+  FVideoUsesQsv := False;
   FAudioStream := nil;
   FAudioStreamIndex := -1;
   FillChar(FInfo, SizeOf(FInfo), 0);
@@ -244,6 +268,13 @@ end;
 procedure TFFmpegDecoder.UpdateVideoLoadStats(ElapsedMs: Double);
 begin
   FFmpegDecodeStats.UpdateVideoLoadStats(FDecodeStats, ElapsedMs);
+end;
+
+// 映像処理時間をdecode/transfer/convertへ分けて統計更新する
+procedure TFFmpegDecoder.UpdateVideoStageStats(TotalMs, DecodeMs,
+  TransferMs, ConvertMs: Double);
+begin
+  FFmpegDecodeStats.UpdateVideoStageStats(FDecodeStats, TotalMs, DecodeMs, TransferMs, ConvertMs);
 end;
 
 // 音声デコード負荷の統計を更新する
@@ -336,8 +367,10 @@ var
   CodecContext: PAVCodecContext; // 映像デコードコンテキスト
   AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト
   Codec: PAVCodec; // 映像ストリームに対応するFFmpegデコーダ
+  SoftwareCodec: PAVCodec; // フォールバック用の通常デコーダ
   Packet: PAVPacket; // 読み込みに再利用するAVPacket
   Frame: PAVFrame; // 映像デコードに再利用するAVFrame
+  TransferFrame: PAVFrame; // HW frameをCPUへ転送するAVFrame
   AudioFrame: PAVFrame; // 音声デコードに再利用するAVFrame
   SwrContext: PSwrContext; // PCM変換用swresampleコンテキスト
   Utf8FileName: UTF8String; // FFmpegへ渡すUTF-8ファイル名
@@ -348,6 +381,11 @@ var
   AudioStream: PAVStream; // 対象の音声ストリーム
   CodecPar: PAVCodecParameters; // 映像ストリームのコーデック情報
   HasVideoStream: Boolean; // 映像ストリームがあるかどうか
+  QsvDeviceContext: PAVBufferRef;
+  QsvDecoderName: AnsiString;
+  QsvErrorMessage: string;
+  OpenedWithQsv: Boolean;
+  VideoDecoderName: string;
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
@@ -358,10 +396,14 @@ begin
   AudioCodecContext := nil;
   Packet := nil;
   Frame := nil;
+  TransferFrame := nil;
+  QsvDeviceContext := nil;
   AudioFrame := nil;
   SwrContext := nil;
   AudioStream := nil;
   AudioStreamIndex := -1;
+  OpenedWithQsv := False;
+  VideoDecoderName := '';
 
   try
     TFFmpegApi.EnsureLoaded;
@@ -404,12 +446,39 @@ begin
         Exit;
       end;
 
-      Codec := TFFmpegApi.avcodec_find_decoder(CodecPar.codec_id);
-      if not Assigned(Codec) then
+      SoftwareCodec := TFFmpegApi.avcodec_find_decoder(CodecPar.codec_id);
+      if not Assigned(SoftwareCodec) then
       begin
         ErrorMessage := 'Decoder was not found.';
         Exit;
       end;
+
+      Codec := nil;
+      OpenedWithQsv := False;
+      VideoDecoderName := 'software';
+      QsvDecoderName := QsvDecoderNameForCodecId(CodecPar.codec_id);
+      if QsvDecoderName <> '' then
+      begin
+        Codec := TFFmpegApi.avcodec_find_decoder_by_name(PAnsiChar(QsvDecoderName));
+        if Assigned(Codec) and CreateQsvDevice(QsvDeviceContext, QsvErrorMessage) then
+        begin
+          VideoDecoderName := string(QsvDecoderName);
+          OpenedWithQsv := True;
+        end
+        else
+        begin
+          if not Assigned(Codec) then
+            QsvErrorMessage := 'QSV decoder was not found.';
+          DecodeTrace(Format('qsv_fallback file="%s" decoder="%s" reason="%s"',
+            [FileName, string(QsvDecoderName), QsvErrorMessage]));
+          Codec := nil;
+          if Assigned(QsvDeviceContext) then
+            TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
+        end;
+      end;
+
+      if not Assigned(Codec) then
+        Codec := SoftwareCodec;
 
       CodecContext := TFFmpegApi.avcodec_alloc_context3(Codec);
       if not Assigned(CodecContext) then
@@ -428,8 +497,40 @@ begin
       Ret := TFFmpegApi.avcodec_open2(CodecContext, Codec, nil);
       if Ret < 0 then
       begin
-        ErrorMessage := TFFmpegApi.ErrorText(Ret);
-        Exit;
+        if OpenedWithQsv then
+        begin
+          DecodeTrace(Format('qsv_fallback file="%s" decoder="%s" reason="%s"',
+            [FileName, VideoDecoderName, TFFmpegApi.ErrorText(Ret)]));
+          TFFmpegApi.avcodec_free_context(@CodecContext);
+          if Assigned(QsvDeviceContext) then
+            TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
+          Codec := SoftwareCodec;
+          CodecContext := TFFmpegApi.avcodec_alloc_context3(Codec);
+          if not Assigned(CodecContext) then
+          begin
+            ErrorMessage := 'avcodec_alloc_context3 failed.';
+            Exit;
+          end;
+          Ret := TFFmpegApi.avcodec_parameters_to_context(CodecContext, CodecPar);
+          if Ret < 0 then
+          begin
+            ErrorMessage := TFFmpegApi.ErrorText(Ret);
+            Exit;
+          end;
+          Ret := TFFmpegApi.avcodec_open2(CodecContext, Codec, nil);
+          if Ret < 0 then
+          begin
+            ErrorMessage := TFFmpegApi.ErrorText(Ret);
+            Exit;
+          end;
+          OpenedWithQsv := False;
+          VideoDecoderName := 'software';
+        end
+        else
+        begin
+          ErrorMessage := TFFmpegApi.ErrorText(Ret);
+          Exit;
+        end;
       end;
 
       Frame := TFFmpegApi.av_frame_alloc();
@@ -438,6 +539,16 @@ begin
         ErrorMessage := 'Failed to allocate video frame.';
         Exit;
       end;
+
+      TransferFrame := TFFmpegApi.av_frame_alloc();
+      if TransferFrame = nil then
+      begin
+        ErrorMessage := 'Failed to allocate transfer frame.';
+        Exit;
+      end;
+
+      DecodeTrace(Format('video_decoder file="%s" decoder="%s" qsv=%s codec_id=%d',
+        [FileName, VideoDecoderName, BoolToStr(OpenedWithQsv, True), CodecPar.codec_id]));
 
       Info.Width := CodecPar.width;
       Info.Height := CodecPar.height;
@@ -482,6 +593,10 @@ begin
     FSwrContext := SwrContext;
     FPacket := Packet;
     FFrame := Frame;
+    FTransferFrame := TransferFrame;
+    FQsvDeviceContext := QsvDeviceContext;
+    FVideoDecoderName := VideoDecoderName;
+    FVideoUsesQsv := OpenedWithQsv;
     FInfo := Info;
 
     FormatContext := nil;
@@ -489,6 +604,8 @@ begin
     AudioCodecContext := nil;
     Packet := nil;
     Frame := nil;
+    TransferFrame := nil;
+    QsvDeviceContext := nil;
     AudioFrame := nil;
     SwrContext := nil;
     Result := True;
@@ -499,6 +616,10 @@ begin
 
   if Assigned(Frame) then
     TFFmpegApi.av_frame_free(@Frame);
+  if Assigned(TransferFrame) then
+    TFFmpegApi.av_frame_free(@TransferFrame);
+  if Assigned(QsvDeviceContext) then
+    TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
   if Assigned(Packet) then
     TFFmpegApi.av_packet_free(@Packet);
   if Assigned(SwrContext) then
@@ -593,16 +714,24 @@ var
   CodecContext: PAVCodecContext; // 映像デコードコンテキスト
   Packet: PAVPacket; // 読み込みに再利用するAVPacket
   Frame: PAVFrame; // デコード結果を受け取るAVFrame
+  ConvertSourceFrame: PAVFrame; // BGRx32変換へ渡すCPU側フレーム
   Stream: PAVStream; // 対象の映像ストリーム
   Ret: Integer; // FFmpeg APIの戻り値
   TargetTs: Int64; // 目的位置のストリーム時間軸PTS
 {$IFDEF DEBUG}
   Stopwatch: TStopwatch; // デコード負荷測定用タイマー
+  ConvertStopwatch: TStopwatch;
+  TransferStopwatch: TStopwatch;
   TotalStopwatch: TStopwatch;
+  DecodeElapsedMs: Double;
+  TransferElapsedMs: Double;
+  ConvertElapsedMs: Double;
   ReadPacketCount: Integer;
   VideoPacketCount: Integer;
   DecodedFrameCount: Integer;
 {$ENDIF}
+  DidTransfer: Boolean;
+  TransferErrorMessage: string;
 begin
   ErrorMessage := '';
   Result := False;
@@ -626,6 +755,9 @@ begin
       ReadPacketCount := 0;
       VideoPacketCount := 0;
       DecodedFrameCount := 0;
+      DecodeElapsedMs := 0;
+      TransferElapsedMs := 0;
+      ConvertElapsedMs := 0;
     end;
 {$ENDIF}
 {$IFDEF DEBUG}
@@ -667,7 +799,16 @@ begin
 {$ENDIF}
         Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
         if Ret < 0 then
+        begin
+{$IFDEF DEBUG}
+          if DECODE_TRACE_ENABLED then
+          begin
+            Stopwatch.Stop;
+            DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds;
+          end;
+{$ENDIF}
           Continue;
+        end;
 
         while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
         begin
@@ -677,22 +818,52 @@ begin
 {$ENDIF}
           if (Frame.pts = AV_NOPTS_VALUE) or (Frame.pts >= TargetTs) then
           begin
-            CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
-              FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
 {$IFDEF DEBUG}
             if DECODE_TRACE_ENABLED then
             begin
               Stopwatch.Stop;
+              DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds;
+              ConvertStopwatch := TStopwatch.StartNew;
+            end;
+{$ENDIF}
+            ConvertSourceFrame := Frame;
+            DidTransfer := False;
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+              TransferStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+            if not TransferFrameToCpuIfNeeded(Frame, PAVFrame(FTransferFrame),
+              ConvertSourceFrame, DidTransfer, TransferErrorMessage) then
+            begin
+              ErrorMessage := 'Failed to transfer video frame: ' + TransferErrorMessage;
+              Exit;
+            end;
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+            begin
+              TransferStopwatch.Stop;
+              if DidTransfer then
+                TransferElapsedMs := TransferElapsedMs + TransferStopwatch.Elapsed.TotalMilliseconds;
+            end;
+{$ENDIF}
+            CopyFrameToBgrx32Buffer(ConvertSourceFrame, Buffer, BufferStride,
+              FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+            begin
+              ConvertStopwatch.Stop;
+              ConvertElapsedMs := ConvertStopwatch.Elapsed.TotalMilliseconds;
               TotalStopwatch.Stop;
-              UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+              UpdateVideoStageStats(TotalStopwatch.Elapsed.TotalMilliseconds,
+                DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs);
             end;
 {$ENDIF}
 {$IFDEF DEBUG}
             if DECODE_TRACE_ENABLED then
-              DecodeTrace(Format('seek_decode file="%s" pos_ms=%d target_ts=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f convert_ms=%.3f',
-                [FFileName, PositionMs, TargetTs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+              DecodeTrace(Format('seek_decode file="%s" decoder="%s" qsv=%s pos_ms=%d target_ts=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+                [FFileName, FVideoDecoderName, BoolToStr(FVideoUsesQsv, True), PositionMs, TargetTs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
                  FDirectSwsSrcFormat, FDirectSwsDstFormat,
-                 TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
+                 TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs]));
 {$ENDIF}
             Result := True;
             Exit;
@@ -1321,80 +1492,8 @@ end;
 
 // 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
 function TFFmpegDecoder.DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
-var
-  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
-  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
-  Packet: PAVPacket; // 読み込みに再利用するAVPacket
-  Frame: PAVFrame; // デコード結果を受け取るAVFrame
-  Stream: PAVStream; // 対象の映像ストリーム
-  Ret: Integer; // FFmpeg APIの戻り値
-  Stopwatch: TStopwatch; // デコード負荷測定用タイマー
 begin
-  ErrorMessage := '';
-  PositionMs := -1;
-  Result := False;
-
-  FormatContext := PAVFormatContext(FFormatContext);
-  CodecContext := PAVCodecContext(FCodecContext);
-  Packet := PAVPacket(FPacket);
-  Frame := PAVFrame(FFrame);
-  Stream := PAVStream(FStream);
-
-  if (FormatContext = nil) or (CodecContext = nil) or (Packet = nil) or (Frame = nil) or (Stream = nil) then
-  begin
-    ErrorMessage := 'Decoder is not open.';
-    Exit;
-  end;
-
-  try
-    Stopwatch := TStopwatch.StartNew;
-    if TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 then
-    begin
-      CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
-        FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
-      Stopwatch.Stop;
-      UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
-      PositionMs := StreamTimestampToMs(Stream, Frame.pts);
-      Result := True;
-      Exit;
-    end;
-
-    while TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0 do
-    begin
-      try
-        if Packet.stream_index = FAudioStreamIndex then
-        begin
-          Continue;
-        end;
-
-        if Packet.stream_index <> FStreamIndex then
-          Continue;
-
-        Stopwatch := TStopwatch.StartNew;
-        Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
-        if Ret < 0 then
-          Continue;
-
-        while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
-        begin
-          CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
-            FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
-          Stopwatch.Stop;
-          UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
-          PositionMs := StreamTimestampToMs(Stream, Frame.pts);
-          Result := True;
-          Exit;
-        end;
-      finally
-        TFFmpegApi.av_packet_unref(Packet);
-      end;
-    end;
-
-    ErrorMessage := 'End of stream.';
-  except
-    on E: Exception do
-      ErrorMessage := E.ClassName + ': ' + E.Message;
-  end;
+  Result := DecodeNextFrameToBgrx32Optional(Buffer, BufferStride, True, PositionMs, ErrorMessage);
 end;
 
 function TFFmpegDecoder.DecodeNextFrameToBgrx32Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
@@ -1403,15 +1502,23 @@ var
   CodecContext: PAVCodecContext; // 映像デコードコンテキスト
   Packet: PAVPacket; // 読み込みに再利用するAVPacket
   Frame: PAVFrame; // デコード結果を受け取るAVFrame
+  ConvertSourceFrame: PAVFrame; // BGRx32変換へ渡すCPU側フレーム
   Stream: PAVStream; // 対象の映像ストリーム
   Ret: Integer; // FFmpeg APIの戻り値
 {$IFDEF DEBUG}
   Stopwatch: TStopwatch; // デコード負荷測定用タイマー
+  ConvertStopwatch: TStopwatch;
+  TransferStopwatch: TStopwatch;
   TotalStopwatch: TStopwatch;
+  DecodeElapsedMs: Double;
+  TransferElapsedMs: Double;
+  ConvertElapsedMs: Double;
   ReadPacketCount: Integer;
   VideoPacketCount: Integer;
   DecodedFrameCount: Integer;
 {$ENDIF}
+  DidTransfer: Boolean;
+  TransferErrorMessage: string;
 begin
   ErrorMessage := '';
   PositionMs := -1;
@@ -1436,6 +1543,9 @@ begin
       ReadPacketCount := 0;
       VideoPacketCount := 0;
       DecodedFrameCount := 0;
+      DecodeElapsedMs := 0;
+      TransferElapsedMs := 0;
+      ConvertElapsedMs := 0;
     end;
 {$ENDIF}
 {$IFDEF DEBUG}
@@ -1452,23 +1562,68 @@ begin
         Inc(DecodedFrameCount);
 {$ENDIF}
       if ConvertFrame then
-        CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
+      begin
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+        begin
+          Stopwatch.Stop;
+          DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds;
+        end;
+{$ENDIF}
+        ConvertSourceFrame := Frame;
+        DidTransfer := False;
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+          TransferStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+        if not TransferFrameToCpuIfNeeded(Frame, PAVFrame(FTransferFrame),
+          ConvertSourceFrame, DidTransfer, TransferErrorMessage) then
+        begin
+          ErrorMessage := 'Failed to transfer video frame: ' + TransferErrorMessage;
+          Exit;
+        end;
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+        begin
+          TransferStopwatch.Stop;
+          if DidTransfer then
+            TransferElapsedMs := TransferElapsedMs + TransferStopwatch.Elapsed.TotalMilliseconds;
+          ConvertStopwatch := TStopwatch.StartNew;
+        end;
+{$ENDIF}
+        CopyFrameToBgrx32Buffer(ConvertSourceFrame, Buffer, BufferStride,
           FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+        begin
+          ConvertStopwatch.Stop;
+          ConvertElapsedMs := ConvertStopwatch.Elapsed.TotalMilliseconds;
+        end;
+{$ENDIF}
+      end
+{$IFDEF DEBUG}
+      else if DECODE_TRACE_ENABLED then
+      begin
+        Stopwatch.Stop;
+        DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds;
+      end
+{$ENDIF}
+      ;
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
       begin
-        Stopwatch.Stop;
         TotalStopwatch.Stop;
-        UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+        UpdateVideoStageStats(TotalStopwatch.Elapsed.TotalMilliseconds,
+          DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs);
       end;
 {$ENDIF}
       PositionMs := StreamTimestampToMs(Stream, Frame.pts);
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
-        DecodeTrace(Format('next_decode file="%s" convert=%s source=buffered pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f convert_ms=%.3f',
-          [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+        DecodeTrace(Format('next_decode file="%s" decoder="%s" qsv=%s convert=%s source=buffered pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+          [FFileName, FVideoDecoderName, BoolToStr(FVideoUsesQsv, True), BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
            FDirectSwsSrcFormat, FDirectSwsDstFormat,
-           TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
+           TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs]));
 {$ENDIF}
       Result := True;
       Exit;
@@ -1499,7 +1654,16 @@ begin
 {$ENDIF}
         Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
         if Ret < 0 then
+        begin
+{$IFDEF DEBUG}
+          if DECODE_TRACE_ENABLED then
+          begin
+            Stopwatch.Stop;
+            DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds;
+          end;
+{$ENDIF}
           Continue;
+        end;
 
         while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
         begin
@@ -1508,27 +1672,79 @@ begin
             Inc(DecodedFrameCount);
 {$ENDIF}
           if ConvertFrame then
-            CopyFrameToBgrx32Buffer(Frame, Buffer, BufferStride,
+          begin
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+            begin
+              Stopwatch.Stop;
+              DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds;
+            end;
+{$ENDIF}
+            ConvertSourceFrame := Frame;
+            DidTransfer := False;
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+              TransferStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+            if not TransferFrameToCpuIfNeeded(Frame, PAVFrame(FTransferFrame),
+              ConvertSourceFrame, DidTransfer, TransferErrorMessage) then
+            begin
+              ErrorMessage := 'Failed to transfer video frame: ' + TransferErrorMessage;
+              Exit;
+            end;
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+            begin
+              TransferStopwatch.Stop;
+              if DidTransfer then
+                TransferElapsedMs := TransferElapsedMs + TransferStopwatch.Elapsed.TotalMilliseconds;
+              ConvertStopwatch := TStopwatch.StartNew;
+            end;
+{$ENDIF}
+            CopyFrameToBgrx32Buffer(ConvertSourceFrame, Buffer, BufferStride,
               FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+            begin
+              ConvertStopwatch.Stop;
+              ConvertElapsedMs := ConvertStopwatch.Elapsed.TotalMilliseconds;
+            end;
+{$ENDIF}
+          end
+{$IFDEF DEBUG}
+          else if DECODE_TRACE_ENABLED then
+          begin
+            Stopwatch.Stop;
+            DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds;
+          end
+{$ENDIF}
+          ;
 {$IFDEF DEBUG}
           if DECODE_TRACE_ENABLED then
           begin
-            Stopwatch.Stop;
             TotalStopwatch.Stop;
-            UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+            UpdateVideoStageStats(TotalStopwatch.Elapsed.TotalMilliseconds,
+              DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs);
           end;
 {$ENDIF}
           PositionMs := StreamTimestampToMs(Stream, Frame.pts);
 {$IFDEF DEBUG}
           if DECODE_TRACE_ENABLED then
-            DecodeTrace(Format('next_decode file="%s" convert=%s source=packet pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f convert_ms=%.3f',
-              [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+            DecodeTrace(Format('next_decode file="%s" decoder="%s" qsv=%s convert=%s source=packet pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+              [FFileName, FVideoDecoderName, BoolToStr(FVideoUsesQsv, True), BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
                FDirectSwsSrcFormat, FDirectSwsDstFormat,
-               TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
+               TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs]));
 {$ENDIF}
           Result := True;
           Exit;
         end;
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+        begin
+          Stopwatch.Stop;
+          DecodeElapsedMs := DecodeElapsedMs + Stopwatch.Elapsed.TotalMilliseconds; // packet without output frame
+        end;
+{$ENDIF}
       finally
         TFFmpegApi.av_packet_unref(Packet);
       end;
@@ -1709,15 +1925,83 @@ var
   CodecContext: PAVCodecContext;
   Packet: PAVPacket;
   Frame: PAVFrame;
+  ConvertSourceFrame: PAVFrame;
   Stream: PAVStream;
   Ret: Integer;
 {$IFDEF DEBUG}
-  Stopwatch: TStopwatch;
+  DecodeStopwatch: TStopwatch;
+  TransferStopwatch: TStopwatch;
+  ConvertStopwatch: TStopwatch;
   TotalStopwatch: TStopwatch;
+  DecodeElapsedMs: Double;
+  TransferElapsedMs: Double;
+  ConvertElapsedMs: Double;
   ReadPacketCount: Integer;
   VideoPacketCount: Integer;
   DecodedFrameCount: Integer;
 {$ENDIF}
+  DidTransfer: Boolean;
+  TransferErrorMessage: string;
+
+  function FinishFrame(const SourceName: string): Boolean;
+  begin
+    Result := False;
+    if ConvertFrame then
+    begin
+      ConvertSourceFrame := Frame;
+      DidTransfer := False;
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        TransferStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+      if not TransferFrameToCpuIfNeeded(Frame, PAVFrame(FTransferFrame),
+        ConvertSourceFrame, DidTransfer, TransferErrorMessage) then
+      begin
+        ErrorMessage := 'Failed to transfer video frame: ' + TransferErrorMessage;
+        Exit;
+      end;
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        TransferStopwatch.Stop;
+        if DidTransfer then
+          TransferElapsedMs := TransferElapsedMs + TransferStopwatch.Elapsed.TotalMilliseconds;
+        ConvertStopwatch := TStopwatch.StartNew;
+      end;
+{$ENDIF}
+      CopyFrameToYuy2Buffer(ConvertSourceFrame, Buffer, BufferStride,
+        FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        ConvertStopwatch.Stop;
+        ConvertElapsedMs := ConvertElapsedMs + ConvertStopwatch.Elapsed.TotalMilliseconds;
+      end;
+{$ENDIF}
+    end;
+
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      TotalStopwatch.Stop;
+      UpdateVideoStageStats(TotalStopwatch.Elapsed.TotalMilliseconds,
+        DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs);
+    end;
+{$ENDIF}
+    PositionMs := StreamTimestampToMs(Stream, Frame.pts);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      DecodeTrace(Format('next_decode_yuy2 file="%s" decoder="%s" qsv=%s convert=%s source=%s pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+        [FFileName, FVideoDecoderName, BoolToStr(FVideoUsesQsv, True),
+         BoolToStr(ConvertFrame, True), SourceName, PositionMs, Frame.pts,
+         ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+         FDirectSwsSrcFormat, FDirectSwsDstFormat,
+         TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs,
+         TransferElapsedMs, ConvertElapsedMs]));
+{$ENDIF}
+    Result := True;
+  end;
+
 begin
   ErrorMessage := '';
   PositionMs := -1;
@@ -1742,40 +2026,29 @@ begin
       ReadPacketCount := 0;
       VideoPacketCount := 0;
       DecodedFrameCount := 0;
+      DecodeElapsedMs := 0;
+      TransferElapsedMs := 0;
+      ConvertElapsedMs := 0;
     end;
 {$ENDIF}
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
     begin
       TotalStopwatch := TStopwatch.StartNew;
-      Stopwatch := TStopwatch.StartNew;
+      DecodeStopwatch := TStopwatch.StartNew;
     end;
 {$ENDIF}
     if TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 then
     begin
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
-        Inc(DecodedFrameCount);
-{$ENDIF}
-      if ConvertFrame then
-        CopyFrameToYuy2Buffer(Frame, Buffer, BufferStride,
-          FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
-{$IFDEF DEBUG}
-      if DECODE_TRACE_ENABLED then
       begin
-        Stopwatch.Stop;
-        TotalStopwatch.Stop;
-        UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+        Inc(DecodedFrameCount);
+        DecodeStopwatch.Stop;
+        DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
       end;
 {$ENDIF}
-      PositionMs := StreamTimestampToMs(Stream, Frame.pts);
-{$IFDEF DEBUG}
-      if DECODE_TRACE_ENABLED then
-        DecodeTrace(Format('next_decode_yuy2 file="%s" convert=%s source=buffered pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
-          [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
-           TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
-{$ENDIF}
-      Result := True;
+      Result := FinishFrame('buffered');
       Exit;
     end;
 
@@ -1800,39 +2073,41 @@ begin
 
 {$IFDEF DEBUG}
         if DECODE_TRACE_ENABLED then
-          Stopwatch := TStopwatch.StartNew;
+          DecodeStopwatch := TStopwatch.StartNew;
 {$ENDIF}
         Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
         if Ret < 0 then
+        begin
+{$IFDEF DEBUG}
+          if DECODE_TRACE_ENABLED then
+          begin
+            DecodeStopwatch.Stop;
+            DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
+          end;
+{$ENDIF}
           Continue;
+        end;
 
         while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
         begin
 {$IFDEF DEBUG}
           if DECODE_TRACE_ENABLED then
-            Inc(DecodedFrameCount);
-{$ENDIF}
-          if ConvertFrame then
-            CopyFrameToYuy2Buffer(Frame, Buffer, BufferStride,
-              FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
-{$IFDEF DEBUG}
-          if DECODE_TRACE_ENABLED then
           begin
-            Stopwatch.Stop;
-            TotalStopwatch.Stop;
-            UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+            Inc(DecodedFrameCount);
+            DecodeStopwatch.Stop;
+            DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
           end;
 {$ENDIF}
-          PositionMs := StreamTimestampToMs(Stream, Frame.pts);
-{$IFDEF DEBUG}
-          if DECODE_TRACE_ENABLED then
-            DecodeTrace(Format('next_decode_yuy2 file="%s" convert=%s source=packet pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
-              [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
-               TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
-{$ENDIF}
-          Result := True;
+          Result := FinishFrame('packet');
           Exit;
         end;
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+        begin
+          DecodeStopwatch.Stop;
+          DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
+        end;
+{$ENDIF}
       finally
         TFFmpegApi.av_packet_unref(Packet);
       end;
@@ -1861,15 +2136,83 @@ var
   CodecContext: PAVCodecContext;
   Packet: PAVPacket;
   Frame: PAVFrame;
+  ConvertSourceFrame: PAVFrame;
   Stream: PAVStream;
   Ret: Integer;
 {$IFDEF DEBUG}
-  Stopwatch: TStopwatch;
+  DecodeStopwatch: TStopwatch;
+  TransferStopwatch: TStopwatch;
+  ConvertStopwatch: TStopwatch;
   TotalStopwatch: TStopwatch;
+  DecodeElapsedMs: Double;
+  TransferElapsedMs: Double;
+  ConvertElapsedMs: Double;
   ReadPacketCount: Integer;
   VideoPacketCount: Integer;
   DecodedFrameCount: Integer;
 {$ENDIF}
+  DidTransfer: Boolean;
+  TransferErrorMessage: string;
+
+  function FinishFrame(const SourceName: string): Boolean;
+  begin
+    Result := False;
+    if ConvertFrame then
+    begin
+      ConvertSourceFrame := Frame;
+      DidTransfer := False;
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        TransferStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+      if not TransferFrameToCpuIfNeeded(Frame, PAVFrame(FTransferFrame),
+        ConvertSourceFrame, DidTransfer, TransferErrorMessage) then
+      begin
+        ErrorMessage := 'Failed to transfer video frame: ' + TransferErrorMessage;
+        Exit;
+      end;
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        TransferStopwatch.Stop;
+        if DidTransfer then
+          TransferElapsedMs := TransferElapsedMs + TransferStopwatch.Elapsed.TotalMilliseconds;
+        ConvertStopwatch := TStopwatch.StartNew;
+      end;
+{$ENDIF}
+      CopyFrameToI420Buffer(ConvertSourceFrame, Buffer, BufferStride,
+        FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        ConvertStopwatch.Stop;
+        ConvertElapsedMs := ConvertElapsedMs + ConvertStopwatch.Elapsed.TotalMilliseconds;
+      end;
+{$ENDIF}
+    end;
+
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      TotalStopwatch.Stop;
+      UpdateVideoStageStats(TotalStopwatch.Elapsed.TotalMilliseconds,
+        DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs);
+    end;
+{$ENDIF}
+    PositionMs := StreamTimestampToMs(Stream, Frame.pts);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      DecodeTrace(Format('next_decode_i420 file="%s" decoder="%s" qsv=%s convert=%s source=%s pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+        [FFileName, FVideoDecoderName, BoolToStr(FVideoUsesQsv, True),
+         BoolToStr(ConvertFrame, True), SourceName, PositionMs, Frame.pts,
+         ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+         FDirectSwsSrcFormat, FDirectSwsDstFormat,
+         TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs,
+         TransferElapsedMs, ConvertElapsedMs]));
+{$ENDIF}
+    Result := True;
+  end;
+
 begin
   ErrorMessage := '';
   PositionMs := -1;
@@ -1894,41 +2237,29 @@ begin
       ReadPacketCount := 0;
       VideoPacketCount := 0;
       DecodedFrameCount := 0;
+      DecodeElapsedMs := 0;
+      TransferElapsedMs := 0;
+      ConvertElapsedMs := 0;
     end;
 {$ENDIF}
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
     begin
       TotalStopwatch := TStopwatch.StartNew;
-      Stopwatch := TStopwatch.StartNew;
+      DecodeStopwatch := TStopwatch.StartNew;
     end;
 {$ENDIF}
     if TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 then
     begin
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
-        Inc(DecodedFrameCount);
-{$ENDIF}
-      if ConvertFrame then
-        CopyFrameToI420Buffer(Frame, Buffer, BufferStride,
-          FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
-{$IFDEF DEBUG}
-      if DECODE_TRACE_ENABLED then
       begin
-        Stopwatch.Stop;
-        TotalStopwatch.Stop;
-        UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+        Inc(DecodedFrameCount);
+        DecodeStopwatch.Stop;
+        DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
       end;
 {$ENDIF}
-      PositionMs := StreamTimestampToMs(Stream, Frame.pts);
-{$IFDEF DEBUG}
-      if DECODE_TRACE_ENABLED then
-        DecodeTrace(Format('next_decode_i420 file="%s" convert=%s source=buffered pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f convert_ms=%.3f',
-          [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
-           FDirectSwsSrcFormat, FDirectSwsDstFormat,
-           TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
-{$ENDIF}
-      Result := True;
+      Result := FinishFrame('buffered');
       Exit;
     end;
 
@@ -1953,40 +2284,41 @@ begin
 
 {$IFDEF DEBUG}
         if DECODE_TRACE_ENABLED then
-          Stopwatch := TStopwatch.StartNew;
+          DecodeStopwatch := TStopwatch.StartNew;
 {$ENDIF}
         Ret := TFFmpegApi.avcodec_send_packet(CodecContext, Packet);
         if Ret < 0 then
+        begin
+{$IFDEF DEBUG}
+          if DECODE_TRACE_ENABLED then
+          begin
+            DecodeStopwatch.Stop;
+            DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
+          end;
+{$ENDIF}
           Continue;
+        end;
 
         while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
         begin
 {$IFDEF DEBUG}
           if DECODE_TRACE_ENABLED then
-            Inc(DecodedFrameCount);
-{$ENDIF}
-          if ConvertFrame then
-            CopyFrameToI420Buffer(Frame, Buffer, BufferStride,
-              FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat, FDirectSwsDstFormat);
-{$IFDEF DEBUG}
-          if DECODE_TRACE_ENABLED then
           begin
-            Stopwatch.Stop;
-            TotalStopwatch.Stop;
-            UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
+            Inc(DecodedFrameCount);
+            DecodeStopwatch.Stop;
+            DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
           end;
 {$ENDIF}
-          PositionMs := StreamTimestampToMs(Stream, Frame.pts);
-{$IFDEF DEBUG}
-          if DECODE_TRACE_ENABLED then
-            DecodeTrace(Format('next_decode_i420 file="%s" convert=%s source=packet pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f convert_ms=%.3f',
-              [FFileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
-               FDirectSwsSrcFormat, FDirectSwsDstFormat,
-               TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
-{$ENDIF}
-          Result := True;
+          Result := FinishFrame('packet');
           Exit;
         end;
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+        begin
+          DecodeStopwatch.Stop;
+          DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
+        end;
+{$ENDIF}
       finally
         TFFmpegApi.av_packet_unref(Packet);
       end;

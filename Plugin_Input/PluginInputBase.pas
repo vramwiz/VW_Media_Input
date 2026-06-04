@@ -29,12 +29,13 @@ uses
 const
   MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
   SHARED_FRAME_CACHE_CAPACITY = 16; // ファイル間共有フレームキャッシュの最大保持数
-  VIDEO_OUTPUT_BGRX32 = 0;
-  VIDEO_OUTPUT_BGR24 = 1;
-  VIDEO_OUTPUT_YUY2 = 2;
-  VIDEO_OUTPUT_I420 = 3;
-  VIDEO_OUTPUT_YC48 = 4;
-  VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32;
+  VIDEO_OUTPUT_BGRX32 = 0; // AviUtl2へ32bit BGRxで返す形式
+  VIDEO_OUTPUT_BGR24 = 1; // AviUtl2へ24bit BGRで返す形式
+  VIDEO_OUTPUT_YUY2 = 2; // AviUtl2へYUY2で返す形式
+  VIDEO_OUTPUT_I420 = 3; // AviUtl2へI420で返す試験用形式
+  VIDEO_OUTPUT_YC48 = 4; // AviUtl2へYC48で返す試験用形式
+  VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_YUY2; // 現在採用するAviUtl2向け映像形式
+  ENABLE_REUSABLE_DECODER = False; // 終了時にQSVリソースを残さないためデコーダ再利用を抑止
   BI_YUY2 = $32595559; // 'YUY2'
   BI_I420 = $30323449; // 'I420'
   BI_YC48 = $38344359; // 'YC48'
@@ -281,7 +282,7 @@ begin
   if Ctx = nil then
     Exit;
 
-  if Ctx^.HasVideo then
+  if Ctx^.HasVideo and ENABLE_REUSABLE_DECODER then
     SaveReusableDecoder(Ctx^.Decoder, Ctx^.FileName, Ctx^.VideoInfo, Ctx^.LastDecodedFrame);
   Ctx^.Decoder.Free;
   Ctx^.AudioInput.Free;
@@ -398,7 +399,8 @@ begin
 {$ENDIF}
     Ctx^.LastDecodedFrame := -1;
 
-    if TryTakeReusableDecoder(Ctx^.FileName, Ctx^.Decoder, VideoInfo, Ctx^.LastDecodedFrame) then
+    if ENABLE_REUSABLE_DECODER and
+      TryTakeReusableDecoder(Ctx^.FileName, Ctx^.Decoder, VideoInfo, Ctx^.LastDecodedFrame) then
     begin
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then

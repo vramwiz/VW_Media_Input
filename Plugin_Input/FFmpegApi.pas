@@ -110,6 +110,8 @@ type
   PAVCodec = Pointer;
   PAVCodecContext = Pointer;
   PPAVCodecContext = ^PAVCodecContext;
+  PAVBufferRef = Pointer; // FFmpegの参照カウント付きバッファ
+  PPAVBufferRef = ^PAVBufferRef; // AVBufferRefポインタの参照
   PSwsContext = Pointer;
   PSwrContext = Pointer;
   PPSwrContext = ^PSwrContext;
@@ -159,6 +161,7 @@ type
   Tav_seek_frame = function(s: PAVFormatContext; stream_index: Integer; timestamp: Int64; flags: Integer): Integer; cdecl;
 
   Tavcodec_find_decoder = function(id: Integer): PAVCodec; cdecl;
+  Tavcodec_find_decoder_by_name = function(name: PAnsiChar): PAVCodec; cdecl; // 名前からデコーダを探す関数型
   Tavcodec_alloc_context3 = function(codec: PAVCodec): PAVCodecContext; cdecl;
   Tavcodec_parameters_to_context = function(codecContext: PAVCodecContext; codecpar: PAVCodecParameters): Integer; cdecl;
   Tavcodec_open2 = function(codecContext: PAVCodecContext; codec: PAVCodec; options: Pointer): Integer; cdecl;
@@ -172,8 +175,12 @@ type
 
   Tav_frame_alloc = function: PAVFrame; cdecl;
   Tav_frame_free = procedure(frame: PPAVFrame); cdecl;
+  Tav_frame_unref = procedure(frame: PAVFrame); cdecl; // AVFrameの参照を解放する関数型
   Tav_strerror = function(errnum: Integer; errbuf: PAnsiChar; errbuf_size: NativeUInt): Integer; cdecl;
   Tav_get_sample_fmt_name = function(sample_fmt: Integer): PAnsiChar; cdecl;
+  Tav_hwdevice_ctx_create = function(device_ctx: PPAVBufferRef; dev_type: Integer; device: PAnsiChar; opts: Pointer; flags: Integer): Integer; cdecl; // HW device contextを作る関数型
+  Tav_hwframe_transfer_data = function(dst: PAVFrame; const src: PAVFrame; flags: Integer): Integer; cdecl; // HW frameをCPU側へ転送する関数型
+  Tav_buffer_unref = procedure(buf: PPAVBufferRef); cdecl; // AVBufferRefを解放する関数型
 
   Tsws_getContext = function(srcW, srcH, srcFormat, dstW, dstH, dstFormat, flags: Integer; srcFilter, dstFilter, param: Pointer): PSwsContext; cdecl;
   Tsws_scale = function(context: PSwsContext; srcSlice, srcStride: Pointer; srcSliceY, srcSliceH: Integer; dst, dstStride: Pointer): Integer; cdecl;
@@ -196,8 +203,11 @@ const
   AVSEEK_FLAG_BACKWARD = 1;
   AV_PIX_FMT_YUV420P = 0; // I420へ直接渡せるFFmpeg planar YUV420形式
   AV_PIX_FMT_YUYV422 = 1; // YUY2へ渡すためのFFmpeg packed YUV422形式
-  AV_PIX_FMT_BGR24 = 3;
-  AV_PIX_FMT_BGRA = 28;
+  AV_PIX_FMT_BGR24 = 3; // 24bit BGR形式
+  AV_PIX_FMT_NV12 = 23; // QSV decoderが返すことが多いNV12形式
+  AV_PIX_FMT_BGRA = 28; // 32bit BGRA形式
+  AV_PIX_FMT_QSV = 114; // QSV HW frame形式
+  AV_HWDEVICE_TYPE_QSV = 5; // QSV HW device種別
   SWS_BILINEAR = 2;
   AV_NOPTS_VALUE = -9223372036854775808;
   AV_SAMPLE_FMT_S16 = 1;
@@ -242,6 +252,11 @@ type
     class var sws_getContext: Tsws_getContext; // 色変換コンテキストを作る関数
     class var sws_scale: Tsws_scale; // フレームをBGRへ変換する関数
     class var sws_freeContext: Tsws_freeContext; // 色変換コンテキストを解放する関数
+    class var avcodec_find_decoder_by_name: Tavcodec_find_decoder_by_name; // 名前からデコーダを探す関数
+    class var av_frame_unref: Tav_frame_unref; // AVFrameの参照を解放する関数
+    class var av_hwdevice_ctx_create: Tav_hwdevice_ctx_create; // HW device contextを作る関数
+    class var av_hwframe_transfer_data: Tav_hwframe_transfer_data; // HW frameをCPU側へ転送する関数
+    class var av_buffer_unref: Tav_buffer_unref; // AVBufferRefを解放する関数
     class var swr_alloc_set_opts2: Tswr_alloc_set_opts2; // 音声変換コンテキストを作る関数
     class var swr_init: Tswr_init; // 音声変換コンテキストを初期化する関数
     class var swr_convert: Tswr_convert; // 音声フレームをPCMへ変換する関数
@@ -329,6 +344,10 @@ begin
   av_get_sample_fmt_name := Tav_get_sample_fmt_name(LoadProc(FAvUtil, 'av_get_sample_fmt_name'));
   av_frame_alloc := Tav_frame_alloc(LoadProc(FAvUtil, 'av_frame_alloc'));
   av_frame_free := Tav_frame_free(LoadProc(FAvUtil, 'av_frame_free'));
+  av_frame_unref := Tav_frame_unref(LoadProc(FAvUtil, 'av_frame_unref'));
+  av_hwdevice_ctx_create := Tav_hwdevice_ctx_create(LoadProc(FAvUtil, 'av_hwdevice_ctx_create'));
+  av_hwframe_transfer_data := Tav_hwframe_transfer_data(LoadProc(FAvUtil, 'av_hwframe_transfer_data'));
+  av_buffer_unref := Tav_buffer_unref(LoadProc(FAvUtil, 'av_buffer_unref'));
   av_channel_layout_default := Tav_channel_layout_default(LoadProc(FAvUtil, 'av_channel_layout_default'));
   av_channel_layout_copy := Tav_channel_layout_copy(LoadProc(FAvUtil, 'av_channel_layout_copy'));
   av_channel_layout_uninit := Tav_channel_layout_uninit(LoadProc(FAvUtil, 'av_channel_layout_uninit'));
@@ -342,6 +361,7 @@ begin
   av_seek_frame := Tav_seek_frame(LoadProc(FAvFormat, 'av_seek_frame'));
 
   avcodec_find_decoder := Tavcodec_find_decoder(LoadProc(FAvCodec, 'avcodec_find_decoder'));
+  avcodec_find_decoder_by_name := Tavcodec_find_decoder_by_name(LoadProc(FAvCodec, 'avcodec_find_decoder_by_name'));
   avcodec_alloc_context3 := Tavcodec_alloc_context3(LoadProc(FAvCodec, 'avcodec_alloc_context3'));
   avcodec_parameters_to_context := Tavcodec_parameters_to_context(LoadProc(FAvCodec, 'avcodec_parameters_to_context'));
   avcodec_open2 := Tavcodec_open2(LoadProc(FAvCodec, 'avcodec_open2'));

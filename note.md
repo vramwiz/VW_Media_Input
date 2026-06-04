@@ -536,3 +536,303 @@ YC48 が遅かったため、さらに踏み込んで `I420` 直接出力を試�
 - `AviUtl2InputTypes.pas` のコメント上も `I420` は対応形式に明記されていないため、I420 直接出力は不採用。
 - いったん `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32` へ戻す。
 
+## 2026-06-04 08検証結果を入力プラグインへ反映
+
+`D:\DelphiProg\test\FFmpeg\08` で確認した QSV decode 周りを、入力プラグイン本体へ戻した。
+
+反映した内容:
+
+- `Plugin_Input\FFmpegQsvDecode.pas` を追加。
+  - H.264/HEVC/MPEG2/MJPEG/VP8/VP9/AV1 の codec id から `*_qsv` decoder名を選ぶ。
+  - QSV device contextを作る。
+  - `AV_PIX_FMT_QSV` のHW frameが返った場合だけCPU側frameへ転送する。
+- `Plugin_Input\FFmpegApi.pas`
+  - `avcodec_find_decoder_by_name`
+  - `av_hwdevice_ctx_create`
+  - `av_hwframe_transfer_data`
+  - `av_buffer_unref`
+  - `av_frame_unref`
+  - `AV_PIX_FMT_NV12 = 23`
+  - `AV_PIX_FMT_QSV = 114`
+  - `AV_HWDEVICE_TYPE_QSV = 5`
+  を追加。
+- `Plugin_Input\FFmpegDecoder.pas`
+  - 映像open時にQSV decoderを優先して試す。
+  - 失敗時はsoftware decoderへfallbackする。
+  - 実際に開いたdecoder名とQSV使用有無をログへ出す。
+  - QSV HW frame転送に備えて `FTransferFrame` と `FQsvDeviceContext` を管理する。
+  - BGRx32/YUY2/I420 の順方向デコードログを `decode_ms`、`transfer_ms`、`convert_ms` に分離する。
+- `Plugin_Input\FFmpegDecoderTypes.pas` / `Plugin_Input\FFmpegDecodeStats.pas`
+  - 映像処理時間を total/decode/transfer/convert で分けて保持・更新できるようにした。
+- `VW_Media_Input.dpr` / `VW_Media_Input.dproj`
+  - `FFmpegQsvDecode.pas` を登録。
+
+08で確認済みの結果:
+
+```text
+QSV decoder:
+decoder="h264_qsv" qsv=True
+src_fmt=23 dst_fmt=0
+transfer_ms=0.000
+
+I420/QSV:
+elapsed  avg=0.743 ms
+decode   avg=0.332 ms
+transfer avg=0.000 ms
+convert  avg=0.339 ms
+
+BGRx32/QSV:
+elapsed  avg=3.672 ms
+decode   avg=0.370 ms
+transfer avg=0.000 ms
+convert  avg=3.229 ms
+
+YUY2/QSV:
+elapsed  avg=2.374 ms
+decode   avg=0.412 ms
+transfer avg=0.000 ms
+convert  avg=1.883 ms
+```
+
+現在の本体側判断:
+
+- QSV decodeは本体へ反映済み。
+- I420変換メソッドとログは本体へ反映済み。
+- ただし AviUtl2 への直接出力形式は `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32` のまま維持する。
+- 理由は、AviUtl2上でI420直接出力が「このファイルは対応していません」となり、入力形式として受け付けられなかったため。
+- したがって本体の現実的な採用状態は「QSV decode + BGRx32出力」。
+- I420は、AviUtl2側で受けられる形式が見つかった場合や、別経路でYUV420を渡せる場合の本命候補として残す。
+
+ビルド確認:
+
+- Win64 Debug ビルド成功。
+  - エラー 0。
+  - ヒント 2。
+  - post-buildで `C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.aui2` へコピー成功。
+- Win64 Release ビルド成功。
+  - エラー 0。
+  - ヒント 2。
+  - post-buildで `C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.aui2` へコピー成功。
+
+DLL確認:
+
+- `C:\ProgramData\aviutl2\Plugin\VW_Media_Input`
+  - `avcodec-62.dll`
+  - `avformat-62.dll`
+  - `avutil-60.dll`
+  - `swresample-6.dll`
+  - `swscale-9.dll`
+  が配置済み。
+
+次の確認:
+
+- AviUtl2で同じ素材を開く。
+- `%TEMP%\VW_Media_Input_decode.log` に `video_decoder ... decoder="h264_qsv" qsv=True` が出るか確認する。
+- `read_video` と `next_decode` の平均を、QSV反映前のBGRx32基準値と比較する。
+
+## 2026-06-04 AviUtl2終了時にプロセスが残る件の暫定対応
+
+QSV反映後、AviUtl2終了時にプロセスが残ることがあるとの報告。
+
+確認した疑い:
+
+- `PluginInputClose` では、デコーダを即解放せず `ReusableDecoder` に退避していた。
+- QSV反映後は、デコーダが `FQsvDeviceContext` やFFmpeg/QSV内部リソースを保持する。
+- そのため、入力ハンドルclose後もQSV decoder/contextが残り、AviUtl2終了時のプロセス残留につながる可能性がある。
+
+対応:
+
+- `Plugin_Input\PluginInputBase.pas`
+  - `ENABLE_REUSABLE_DECODER = False` を追加。
+  - 再利用デコーダの取得・保存をこの定数で抑止。
+  - `PluginInputClose` 時に `TFFmpegDecoder.Free` が実行され、QSV/FFmpegリソースを即解放するようにした。
+
+影響:
+
+- 同じファイルを閉じてすぐ開き直す時のデコーダ再利用は無効。
+- フレーム共有キャッシュはそのまま。
+- 通常のデコード速度にはほぼ影響しない想定。
+
+ビルド確認:
+
+- Win64 Debug ビルド成功。
+  - エラー 0。
+  - ヒント 2。
+  - post-buildで `.aui2` コピー成功。
+- Win64 Release ビルド成功。
+  - エラー 0。
+  - ヒント 2。
+  - post-buildで `.aui2` コピー成功。
+
+次の確認:
+
+- AviUtl2で素材を開く。
+- 速度ログが引き続き `decoder="h264_qsv" qsv=True` になるか確認する。
+- AviUtl2終了後にプロセスが残らないか確認する。
+- まだ残る場合は、次に `TFFmpegDecoder.Close` に詳細なcloseログを追加し、どの解放段階で止まるかを見る。
+
+追記:
+
+- 試行回数は少ないが、毎回発生していたAviUtl2プロセス残留が現時点では出ていない。
+- `%TEMP%\VW_Media_Input_decode.log` は更新されており、ログ機能は有効。
+- 今回のログ:
+  - `log_clear`
+  - `video_decoder ... decoder="h264_qsv" qsv=True`
+  - `open ok ... reused=False`
+  が出ている。
+- `reused=False` なので、`ENABLE_REUSABLE_DECODER = False` による再利用デコーダ抑止は効いている。
+
+2026-06-04 10:12 Debug実行ログ集計:
+
+```text
+next_decode count=892
+elapsed  avg=8.664 ms  min=3.164  max=23.753
+decode   avg=0.738 ms  min=0.118  max=3.592
+transfer avg=0.000 ms  min=0.000  max=0.000
+convert  avg=7.781 ms  min=2.783  max=22.647
+```
+
+補足:
+
+- 本体側は `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGRX32` のため、QSV decode後にNV12 -> BGRA変換が入る。
+- そのため、08のI420出力テストより `convert_ms` は重い。
+- ただし `decoder="h264_qsv" qsv=True` は確認できている。
+
+## 2026-06-04 YUY2直接出力の再試行
+
+QSV decode後の本体側BGRx32出力では `NV12 -> BGRA` 変換が重いため、AviUtl2へ別形式で渡せるか再確認する。
+
+AviUtl2 SDKコメント上の対応形式:
+
+- `RGB24`
+- `RGBA32`
+- `PA64`
+- `HF64`
+- `YUY2`
+- `YC48`
+
+試行順:
+
+- まず `YUY2`。
+  - SDKコメントに対応形式として明記されている。
+  - 既存実装があり、切り替えだけで試せる。
+- `I420` は以前「このファイルは対応していません」となったため、再試行優先度は低い。
+- `NV12` はQSV decoderの出力に近く高速化余地は大きいが、SDKコメントに対応形式として明記されていない。
+  - 試すなら、まず「AviUtl2がNV12 FourCCを受け付けるか」を見るための追加実装が必要。
+
+変更:
+
+- `Plugin_Input\PluginInputBase.pas`
+  - `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_YUY2` に変更。
+
+ビルド確認:
+
+- Win64 Debug ビルド成功。
+  - エラー 0。
+  - ヒント 2。
+  - post-buildで `.aui2` コピー成功。
+- Win64 Release ビルド成功。
+  - エラー 0。
+  - ヒント 2。
+  - post-buildで `.aui2` コピー成功。
+
+次の確認:
+
+- AviUtl2で同じ素材を開けるか。
+- 色、上下方向が正しいか。
+- 終了時にプロセスが残らないか。
+- `%TEMP%\VW_Media_Input_decode.log` の `next_decode_yuy2` と `read_video` を集計する。
+
+結果:
+
+- AviUtl2で出力処理を実行。
+- ログ上は `decoder="h264_qsv" qsv=True`。
+- `next_decode_yuy2` が出ている。
+- `image_size=4147200`
+  - 1920x1080 YUY2。
+  - BGRx32の `8294400` から半分になっている。
+
+2026-06-04 10:18 Debug実行ログ集計:
+
+```text
+next_decode_yuy2 count=892
+elapsed  avg=3.647 ms  min=1.715  max=10.876
+decode   avg=0.581 ms  min=0.107  max=2.071
+transfer avg=0.000 ms  min=0.000  max=0.000
+convert  avg=2.949 ms  min=1.496  max=9.313
+
+read_video forward count=892
+elapsed    avg=4.306 ms  min=2.193  max=17.333
+image_size avg=4147200
+```
+
+BGRx32/QSV直近値との比較:
+
+```text
+BGRx32/QSV:
+next_decode elapsed avg=8.664 ms
+convert     avg=7.781 ms
+read_video  avgは約8ms台
+image_size  8294400
+
+YUY2/QSV:
+next_decode elapsed avg=3.647 ms
+convert     avg=2.949 ms
+read_video  avg=4.306 ms
+image_size  4147200
+```
+
+判断:
+
+- YUY2は本体側で明確に速い。
+- AviUtl2 SDKコメント上も対応形式として明記されているため、現時点の本体採用候補は `YUY2` が有力。
+- ただし色味、上下方向、終了時プロセス残留が出ないかをもう少し確認する。
+- 問題なければ `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_YUY2` を本採用候補にする。
+
+## 2026-06-04 デコード高速化はいったん完成
+
+ユーザー判断として、デコード高速化はこの状態でいったん完成とする。
+
+採用状態:
+
+- QSV decodeを優先使用。
+  - 対応decoderが開けない場合はsoftware decoderへfallback。
+- AviUtl2へ返す映像形式は `YUY2`。
+  - `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_YUY2`
+- 終了時プロセス残留対策として、再利用デコーダは無効。
+  - `ENABLE_REUSABLE_DECODER = False`
+- I420変換経路は残すが、AviUtl2直接出力では不採用。
+  - 理由: AviUtl2がI420入力形式を受け付けなかった。
+- BGRx32経路はfallback/比較用として残す。
+
+確定理由:
+
+- `decoder="h264_qsv" qsv=True` を確認済み。
+- YUY2はAviUtl2 SDKコメント上の対応形式に含まれる。
+- YUY2はBGRx32より明確に速い。
+- 1920x1080で返すバッファサイズが `8294400 -> 4147200` に減る。
+- 以前毎回発生していたAviUtl2終了時のプロセス残留が、再利用デコーダ無効化後は現時点で再現していない。
+
+代表値:
+
+```text
+BGRx32/QSV:
+next_decode elapsed avg=8.664 ms
+convert     avg=7.781 ms
+image_size  8294400
+
+YUY2/QSV:
+next_decode elapsed avg=3.647 ms
+convert     avg=2.949 ms
+read_video  avg=4.306 ms
+image_size  4147200
+```
+
+今後の扱い:
+
+- デコード周りは大きく触らない。
+- 次に触る場合は、バグ修正または環境差対策に限定する。
+- 追加実験候補だったNV12は保留。
+  - QSVのNV12に近いため理論上は魅力があるが、AviUtl2 SDKコメントに対応形式として明記されていない。
+  - 現時点ではYUY2の安定性と効果を優先する。
+

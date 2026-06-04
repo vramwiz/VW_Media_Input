@@ -4,7 +4,7 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>VCL</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Release</Config>
+        <Config Condition="'$(Config)'==''">Debug</Config>
         <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <ProjectName Condition="'$(ProjectName)'==''">VW_Media_Input</ProjectName>
         <TargetedPlatforms>3</TargetedPlatforms>
@@ -132,6 +132,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="Plugin_Input\FFmpegAudioOpen.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecodeStats.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegFrameConvert.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegQsvDecode.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegStreamInfo.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecoder.pas"/>
         <DCCReference Include="Plugin_Input\PluginAudioInputReader.pas"/>
@@ -1172,7 +1173,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <PreBuildEventIgnoreExitCode>False</PreBuildEventIgnoreExitCode>
         <PreLinkEvent/>
         <PreLinkEventIgnoreExitCode>False</PreLinkEventIgnoreExitCode>
-        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;</PostBuildEvent>
+        <PostBuildEvent><![CDATA[copy /Y "$(OUTPUTDIR)$(PROJECTNAME).dll" "$(OUTPUTDIR)$(PROJECTNAME).aui2"]]></PostBuildEvent>
         <PostBuildEventIgnoreExitCode>False</PostBuildEventIgnoreExitCode>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Release' And '$(Platform)'=='Win64'">
@@ -1180,7 +1181,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <PreBuildEventIgnoreExitCode>False</PreBuildEventIgnoreExitCode>
         <PreLinkEvent/>
         <PreLinkEventIgnoreExitCode>False</PreLinkEventIgnoreExitCode>
-        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot;</PostBuildEvent>
+        <PostBuildEvent><![CDATA[copy /Y "$(OUTPUTDIR)$(PROJECTNAME).dll" "$(OUTPUTDIR)$(PROJECTNAME).aui2"&&if exist "$(OUTPUTDIR)$(PROJECTNAME).dll" del /Q "$(OUTPUTDIR)$(PROJECTNAME).dll"&&if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm"]]></PostBuildEvent>
         <PostBuildEventIgnoreExitCode>False</PostBuildEventIgnoreExitCode>
     </PropertyGroup>
 </Project>
