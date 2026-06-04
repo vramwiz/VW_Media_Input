@@ -1,4 +1,4 @@
-unit PluginAudioInputReader;
+﻿unit PluginAudioInputReader;
 
 // AviUtl2入力プラグインの音声読み取り処理を担当するユニット。
 // FFmpegデコーダからPCM16 stereo 48kHzを順次読み込み、func_read_audioの要求範囲へ返す。
@@ -13,17 +13,18 @@ type
   // AviUtl2の音声読み取り要求に合わせてPCMキャッシュを管理するクラス。
   TPluginAudioInputReader = class
   private
-    FDecoder: TFFmpegDecoder; // 音声読み取り専用に開くFFmpegデコーダ
-    FFormat: WAVEFORMATEX; // AviUtl2へ返すPCM形式
-    FPcm: TBytes; // デコード済みPCMキャッシュ
-    FSampleCount: Integer; // 音声全体の想定サンプル数
-    FDecodedSamples: Integer; // PCMキャッシュへデコード済みのサンプル数
-    FDecodeFinished: Boolean; // FFmpeg側の音声読み取りが終端に達したか
-    FLastError: string; // 直近の音声読み取りエラー
+    FDecoder               : TFFmpegDecoder; // 音声読み取り専用に開くFFmpegデコーダ
+    FFormat                : WAVEFORMATEX; // AviUtl2へ返すPCM形式
+    FPcm                   : TBytes; // デコード済みPCMキャッシュ
+    FSampleCount           : Integer; // 音声全体の想定サンプル数
+    FDecodedSamples        : Integer; // PCMキャッシュへデコード済みのサンプル数
+    FDecodeFinished        : Boolean; // FFmpeg側の音声読み取りが終端に達したか
+    FLastError             : string; // 直近の音声読み取りエラー
+
     // WAVEFORMATEXのポインタをAviUtl2用に返す。
-    function GetFormatPtr: PWAVEFORMATEX;
+    function GetFormatPtr : PWAVEFORMATEX;
     // 音声入力として扱えるサンプル数を持っているかを返す。
-    function GetHasAudio: Boolean;
+    function GetHasAudio  : Boolean;
   public
     // 音声読み取り用デコーダとPCMキャッシュを解放する。
     destructor Destroy; override;

@@ -1,4 +1,4 @@
-unit FFmpegQsvDecode;
+﻿unit FFmpegQsvDecode;
 
 interface
 
@@ -6,13 +6,13 @@ uses
   FFmpegApi;
 
 const
-  AV_CODEC_ID_MPEG2VIDEO = 2; // MPEG-2 videoのFFmpeg codec id
-  AV_CODEC_ID_MJPEG = 7; // MJPEGのFFmpeg codec id
-  AV_CODEC_ID_H264 = 27; // H.264のFFmpeg codec id
-  AV_CODEC_ID_VP8 = 139; // VP8のFFmpeg codec id
-  AV_CODEC_ID_VP9 = 167; // VP9のFFmpeg codec id
-  AV_CODEC_ID_HEVC = 173; // HEVC/H.265のFFmpeg codec id
-  AV_CODEC_ID_AV1 = 225; // AV1のFFmpeg codec id
+  AV_CODEC_ID_MPEG2VIDEO = 2;   // MPEG-2 videoのFFmpeg codec id
+  AV_CODEC_ID_MJPEG      = 7;   // MJPEGのFFmpeg codec id
+  AV_CODEC_ID_H264       = 27;  // H.264のFFmpeg codec id
+  AV_CODEC_ID_VP8        = 139; // VP8のFFmpeg codec id
+  AV_CODEC_ID_VP9        = 167; // VP9のFFmpeg codec id
+  AV_CODEC_ID_HEVC       = 173; // HEVC/H.265のFFmpeg codec id
+  AV_CODEC_ID_AV1        = 225; // AV1のFFmpeg codec id
 
 // codec idから対応するQSV decoder名を返す。
 function QsvDecoderNameForCodecId(CodecId: Integer): AnsiString;

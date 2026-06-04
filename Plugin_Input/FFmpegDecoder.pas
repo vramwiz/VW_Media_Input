@@ -16,33 +16,33 @@ type
   // 1つの入力ファイルに対するFFmpegリソースとデコード状態を管理するクラス。
   TFFmpegDecoder = class
   private
-    FFileName: string; // 現在開いている動画ファイル名
-    FFormatContext: Pointer; // avformatで開いた入力コンテキスト
-    FCodecContext: Pointer; // avcodecで開いたデコードコンテキスト
-    FStream: Pointer; // 対象の映像ストリーム
-    FStreamIndex: Integer; // 対象の映像ストリーム番号
-    FAudioCodecContext: Pointer; // 音声用デコードコンテキスト
-    FAudioStream: Pointer; // 対象の音声ストリーム
-    FAudioStreamIndex: Integer; // 対象の音声ストリーム番号
-    FAudioFrame: Pointer; // 音声デコードに再利用するAVFrame
-    FSwrContext: Pointer; // PCM変換用swresampleコンテキスト
-    FWaveOut: HWAVEOUT; // デバッグ用音声出力
-    FAudioPlaybackActive: Boolean; // 音声出力中かどうか
-    FAudioBuffers: TList<PAudioWaveBuffer>; // waveOut完了待ちのPCMバッファ
-    FAudioStats: TAudioPlaybackStats; // 音声デコード確認用の数値
-    FDecodeStats: TDecodeLoadStats; // デコード負荷確認用の数値
-    FPacket: Pointer; // 読み込みに再利用するAVPacket
-    FFrame: Pointer; // デコードに再利用するAVFrame
-    FTransferFrame: Pointer; // QSVなどのHW frameをCPUへ転送するAVFrame
-    FQsvDeviceContext: Pointer; // QSV device context
-    FVideoDecoderName: string; // 実際に開いた映像デコーダ名
-    FVideoUsesQsv: Boolean; // QSV decoderを使っているかどうか
-    FInfo: TVideoInfo; // 現在開いている動画の基本情報
-    FDirectSwsContext: Pointer; // AviUtl2バッファ直接出力用の色変換コンテキスト
-    FDirectSwsSrcWidth: Integer; // 直接出力用swsの入力幅
-    FDirectSwsSrcHeight: Integer; // 直接出力用swsの入力高さ
-    FDirectSwsSrcFormat: Integer; // 直接出力用swsの入力ピクセル形式
-    FDirectSwsDstFormat: Integer; // 直接出力用swsの出力ピクセル形式
+    FFileName            : string;                  // 現在開いている動画ファイル名
+    FFormatContext       : Pointer;                 // avformatで開いた入力コンテキスト
+    FCodecContext        : Pointer;                 // avcodecで開いたデコードコンテキスト
+    FStream              : Pointer;                 // 対象の映像ストリーム
+    FStreamIndex         : Integer;                 // 対象の映像ストリーム番号
+    FAudioCodecContext   : Pointer;                 // 音声用デコードコンテキスト
+    FAudioStream         : Pointer;                 // 対象の音声ストリーム
+    FAudioStreamIndex    : Integer;                 // 対象の音声ストリーム番号
+    FAudioFrame          : Pointer;                 // 音声デコードに再利用するAVFrame
+    FSwrContext          : Pointer;                 // PCM変換用swresampleコンテキスト
+    FWaveOut             : HWAVEOUT;                // デバッグ用音声出力
+    FAudioPlaybackActive : Boolean;                 // 音声出力中かどうか
+    FAudioBuffers        : TList<PAudioWaveBuffer>; // waveOut完了待ちのPCMバッファ
+    FAudioStats          : TAudioPlaybackStats;     // 音声デコード確認用の数値
+    FDecodeStats         : TDecodeLoadStats;        // デコード負荷確認用の数値
+    FPacket              : Pointer;                 // 読み込みに再利用するAVPacket
+    FFrame               : Pointer;                 // デコードに再利用するAVFrame
+    FTransferFrame       : Pointer;                 // QSVなどのHW frameをCPUへ転送するAVFrame
+    FQsvDeviceContext    : Pointer;                 // QSV device context
+    FVideoDecoderName    : string;                  // 実際に開いた映像デコーダ名
+    FVideoUsesQsv        : Boolean;                 // QSV decoderを使っているかどうか
+    FInfo                : TVideoInfo;              // 現在開いている動画の基本情報
+    FDirectSwsContext    : Pointer;                 // AviUtl2バッファ直接出力用の色変換コンテキスト
+    FDirectSwsSrcWidth   : Integer;                 // 直接出力用swsの入力幅
+    FDirectSwsSrcHeight  : Integer;                 // 直接出力用swsの入力高さ
+    FDirectSwsSrcFormat  : Integer;                 // 直接出力用swsの入力ピクセル形式
+    FDirectSwsDstFormat  : Integer;                 // 直接出力用swsの出力ピクセル形式
     // 音声パケットをデコードし、デバッグ用にPCM再生と統計更新を行う
     procedure DecodeAudioPacket(Packet: Pointer);
     // waveOutで再生完了したPCMバッファを解放する
@@ -166,15 +166,15 @@ end;
 // 保持しているFFmpegリソースを解放する
 procedure TFFmpegDecoder.Close;
 var
-  CodecContext: PAVCodecContext; // 映像デコードコンテキスト解放用の型付きポインタ
-  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト解放用の型付きポインタ
-  FormatContext: PAVFormatContext; // 入力フォーマットコンテキスト解放用の型付きポインタ
-  Packet: PAVPacket; // 再利用AVPacket解放用の型付きポインタ
-  Frame: PAVFrame; // 映像AVFrame解放用の型付きポインタ
-  TransferFrame: PAVFrame; // HW frame転送用AVFrame解放用の型付きポインタ
-  AudioFrame: PAVFrame; // 音声AVFrame解放用の型付きポインタ
-  SwrContext: PSwrContext; // 音声変換コンテキスト解放用の型付きポインタ
-  QsvDeviceContext: PAVBufferRef; // QSV device context解放用
+  CodecContext      : PAVCodecContext;  // 映像デコードコンテキスト解放用の型付きポインタ
+  AudioCodecContext : PAVCodecContext;  // 音声デコードコンテキスト解放用の型付きポインタ
+  FormatContext     : PAVFormatContext; // 入力フォーマットコンテキスト解放用の型付きポインタ
+  Packet            : PAVPacket;        // 再利用AVPacket解放用の型付きポインタ
+  Frame             : PAVFrame;         // 映像AVFrame解放用の型付きポインタ
+  TransferFrame     : PAVFrame;         // HW frame転送用AVFrame解放用の型付きポインタ
+  AudioFrame        : PAVFrame;         // 音声AVFrame解放用の型付きポインタ
+  SwrContext        : PSwrContext;      // 音声変換コンテキスト解放用の型付きポインタ
+  QsvDeviceContext  : PAVBufferRef;     // QSV device context解放用
 begin
   StopAudioPlayback;
 
@@ -363,29 +363,29 @@ end;
 // 動画を開いてデコード可能な状態にする
 function TFFmpegDecoder.Open(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
 var
-  FormatContext: PAVFormatContext; // avformatで開く入力コンテキスト
-  CodecContext: PAVCodecContext; // 映像デコードコンテキスト
-  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト
-  Codec: PAVCodec; // 映像ストリームに対応するFFmpegデコーダ
-  SoftwareCodec: PAVCodec; // フォールバック用の通常デコーダ
-  Packet: PAVPacket; // 読み込みに再利用するAVPacket
-  Frame: PAVFrame; // 映像デコードに再利用するAVFrame
-  TransferFrame: PAVFrame; // HW frameをCPUへ転送するAVFrame
-  AudioFrame: PAVFrame; // 音声デコードに再利用するAVFrame
-  SwrContext: PSwrContext; // PCM変換用swresampleコンテキスト
-  Utf8FileName: UTF8String; // FFmpegへ渡すUTF-8ファイル名
-  Ret: Integer; // FFmpeg APIの戻り値
-  StreamIndex: Integer; // 対象の映像ストリーム番号
-  AudioStreamIndex: Integer; // 対象の音声ストリーム番号
-  Stream: PAVStream; // 対象の映像ストリーム
-  AudioStream: PAVStream; // 対象の音声ストリーム
-  CodecPar: PAVCodecParameters; // 映像ストリームのコーデック情報
-  HasVideoStream: Boolean; // 映像ストリームがあるかどうか
-  QsvDeviceContext: PAVBufferRef;
-  QsvDecoderName: AnsiString;
-  QsvErrorMessage: string;
-  OpenedWithQsv: Boolean;
-  VideoDecoderName: string;
+  FormatContext     : PAVFormatContext;    // avformatで開く入力コンテキスト
+  CodecContext      : PAVCodecContext;     // 映像デコードコンテキスト
+  AudioCodecContext : PAVCodecContext;     // 音声デコードコンテキスト
+  Codec             : PAVCodec;            // 映像ストリームに対応するFFmpegデコーダ
+  SoftwareCodec     : PAVCodec;            // フォールバック用の通常デコーダ
+  Packet            : PAVPacket;           // 読み込みに再利用するAVPacket
+  Frame             : PAVFrame;            // 映像デコードに再利用するAVFrame
+  TransferFrame     : PAVFrame;            // HW frameをCPUへ転送するAVFrame
+  AudioFrame        : PAVFrame;            // 音声デコードに再利用するAVFrame
+  SwrContext        : PSwrContext;         // PCM変換用swresampleコンテキスト
+  Utf8FileName      : UTF8String;          // FFmpegへ渡すUTF-8ファイル名
+  Ret               : Integer;             // FFmpeg APIの戻り値
+  StreamIndex       : Integer;             // 対象の映像ストリーム番号
+  AudioStreamIndex  : Integer;             // 対象の音声ストリーム番号
+  Stream            : PAVStream;           // 対象の映像ストリーム
+  AudioStream       : PAVStream;           // 対象の音声ストリーム
+  CodecPar          : PAVCodecParameters;  // 映像ストリームのコーデック情報
+  HasVideoStream    : Boolean;             // 映像ストリームがあるかどうか
+  QsvDeviceContext  : PAVBufferRef;
+  QsvDecoderName    : AnsiString;
+  QsvErrorMessage   : string;
+  OpenedWithQsv     : Boolean;
+  VideoDecoderName  : string;
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
