@@ -2,44 +2,17 @@ unit FFmpegDecoderResources;
 
 interface
 
-procedure ReleaseDecoderResources(
-  var DirectSwsContext: Pointer;
-  var DirectSwsSrcWidth: Integer;
-  var DirectSwsSrcHeight: Integer;
-  var DirectSwsSrcFormat: Integer;
-  var DirectSwsDstFormat: Integer;
-  var Packet: Pointer;
-  var Frame: Pointer;
-  var TransferFrame: Pointer;
-  var AudioFrame: Pointer;
-  var SwrContext: Pointer;
-  var AudioCodecContext: Pointer;
-  var CodecContext: Pointer;
-  var QsvDeviceContext: Pointer;
-  var FormatContext: Pointer
-);
+uses
+  FFmpegDecoderContext;
+
+procedure ReleaseDecoderResources(Context: TFFmpegDecoderContext);
 
 implementation
 
 uses
   FFmpegApi;
 
-procedure ReleaseDecoderResources(
-  var DirectSwsContext: Pointer;
-  var DirectSwsSrcWidth: Integer;
-  var DirectSwsSrcHeight: Integer;
-  var DirectSwsSrcFormat: Integer;
-  var DirectSwsDstFormat: Integer;
-  var Packet: Pointer;
-  var Frame: Pointer;
-  var TransferFrame: Pointer;
-  var AudioFrame: Pointer;
-  var SwrContext: Pointer;
-  var AudioCodecContext: Pointer;
-  var CodecContext: Pointer;
-  var QsvDeviceContext: Pointer;
-  var FormatContext: Pointer
-);
+procedure ReleaseDecoderResources(Context: TFFmpegDecoderContext);
 var
   TypedPacket            : PAVPacket;
   TypedFrame             : PAVFrame;
@@ -51,77 +24,80 @@ var
   TypedQsvDeviceContext  : PAVBufferRef;
   TypedFormatContext     : PAVFormatContext;
 begin
-  if DirectSwsContext <> nil then
-  begin
-    TFFmpegApi.sws_freeContext(PSwsContext(DirectSwsContext));
-    DirectSwsContext := nil;
-  end;
-  DirectSwsSrcWidth := 0;
-  DirectSwsSrcHeight := 0;
-  DirectSwsSrcFormat := 0;
-  DirectSwsDstFormat := 0;
+  if Context = nil then
+    Exit;
 
-  TypedPacket := PAVPacket(Packet);
+  if Context.DirectSwsContext <> nil then
+  begin
+    TFFmpegApi.sws_freeContext(PSwsContext(Context.DirectSwsContext));
+    Context.DirectSwsContext := nil;
+  end;
+  Context.DirectSwsSrcWidth := 0;
+  Context.DirectSwsSrcHeight := 0;
+  Context.DirectSwsSrcFormat := 0;
+  Context.DirectSwsDstFormat := 0;
+
+  TypedPacket := PAVPacket(Context.Packet);
   if Assigned(TypedPacket) then
   begin
     TFFmpegApi.av_packet_free(@TypedPacket);
-    Packet := nil;
+    Context.Packet := nil;
   end;
 
-  TypedFrame := PAVFrame(Frame);
+  TypedFrame := PAVFrame(Context.Frame);
   if Assigned(TypedFrame) then
   begin
     TFFmpegApi.av_frame_free(@TypedFrame);
-    Frame := nil;
+    Context.Frame := nil;
   end;
 
-  TypedTransferFrame := PAVFrame(TransferFrame);
+  TypedTransferFrame := PAVFrame(Context.TransferFrame);
   if Assigned(TypedTransferFrame) then
   begin
     TFFmpegApi.av_frame_free(@TypedTransferFrame);
-    TransferFrame := nil;
+    Context.TransferFrame := nil;
   end;
 
-  TypedAudioFrame := PAVFrame(AudioFrame);
+  TypedAudioFrame := PAVFrame(Context.AudioFrame);
   if Assigned(TypedAudioFrame) then
   begin
     TFFmpegApi.av_frame_free(@TypedAudioFrame);
-    AudioFrame := nil;
+    Context.AudioFrame := nil;
   end;
 
-  TypedSwrContext := PSwrContext(SwrContext);
+  TypedSwrContext := PSwrContext(Context.SwrContext);
   if Assigned(TypedSwrContext) then
   begin
     TFFmpegApi.swr_free(@TypedSwrContext);
-    SwrContext := nil;
+    Context.SwrContext := nil;
   end;
 
-  TypedAudioCodecContext := PAVCodecContext(AudioCodecContext);
+  TypedAudioCodecContext := PAVCodecContext(Context.AudioCodecContext);
   if Assigned(TypedAudioCodecContext) then
   begin
     TFFmpegApi.avcodec_free_context(@TypedAudioCodecContext);
-    AudioCodecContext := nil;
+    Context.AudioCodecContext := nil;
   end;
 
-  TypedCodecContext := PAVCodecContext(CodecContext);
+  TypedCodecContext := PAVCodecContext(Context.CodecContext);
   if Assigned(TypedCodecContext) then
   begin
     TFFmpegApi.avcodec_free_context(@TypedCodecContext);
-    CodecContext := nil;
+    Context.CodecContext := nil;
   end;
 
-  TypedQsvDeviceContext := PAVBufferRef(QsvDeviceContext);
+  TypedQsvDeviceContext := PAVBufferRef(Context.QsvDeviceContext);
   if Assigned(TypedQsvDeviceContext) then
   begin
     TFFmpegApi.av_buffer_unref(@TypedQsvDeviceContext);
-    QsvDeviceContext := nil;
+    Context.QsvDeviceContext := nil;
   end;
 
-  TypedFormatContext := PAVFormatContext(FormatContext);
+  TypedFormatContext := PAVFormatContext(Context.FormatContext);
   if Assigned(TypedFormatContext) then
   begin
     TFFmpegApi.avformat_close_input(@TypedFormatContext);
-    FormatContext := nil;
+    Context.FormatContext := nil;
   end;
 end;
 

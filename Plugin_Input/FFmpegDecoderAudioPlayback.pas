@@ -1,20 +1,17 @@
-unit FFmpegAudioPlayback;
+unit FFmpegDecoderAudioPlayback;
 
 interface
 
 uses
   Winapi.MMSystem, System.Generics.Collections, System.SysUtils,
-  FFmpegApi, FFmpegDecoderTypes;
+  FFmpegApi, FFmpegDecoderContext, FFmpegDecoderTypes;
 
 function StartAudioPlayback(
+  Context: TFFmpegDecoderContext;
   var WaveOut: HWAVEOUT;
   var AudioPlaybackActive: Boolean;
   AudioBuffers: TList<PAudioWaveBuffer>;
   var AudioStats: TAudioPlaybackStats;
-  const Info: TVideoInfo;
-  AudioCodecContext: Pointer;
-  AudioStream: Pointer;
-  SwrContext: Pointer;
   out ErrorMessage: string
 ): Boolean;
 
@@ -57,14 +54,11 @@ begin
 end;
 
 function StartAudioPlayback(
+  Context: TFFmpegDecoderContext;
   var WaveOut: HWAVEOUT;
   var AudioPlaybackActive: Boolean;
   AudioBuffers: TList<PAudioWaveBuffer>;
   var AudioStats: TAudioPlaybackStats;
-  const Info: TVideoInfo;
-  AudioCodecContext: Pointer;
-  AudioStream: Pointer;
-  SwrContext: Pointer;
   out ErrorMessage: string
 ): Boolean;
 var
@@ -76,15 +70,19 @@ begin
 
   StopAudioPlayback(WaveOut, AudioPlaybackActive, AudioBuffers, AudioStats);
 
-  if (not Info.Audio.Present) or (AudioCodecContext = nil) or
-     (AudioStream = nil) or (SwrContext = nil) then
+  if (Context = nil) or (not Context.Info.Audio.Present) or
+     (Context.AudioCodecContext = nil) or (Context.AudioStream = nil) or
+     (Context.SwrContext = nil) then
   begin
-    ErrorMessage := Format('Audio decoder is not open. present=%s codec=%s stream=%s swr=%s %s',
-      [BoolToStr(Info.Audio.Present, True),
-       BoolToStr(AudioCodecContext <> nil, True),
-       BoolToStr(AudioStream <> nil, True),
-       BoolToStr(SwrContext <> nil, True),
-       Info.Audio.OpenError]);
+    if Context <> nil then
+      ErrorMessage := Format('Audio decoder is not open. present=%s codec=%s stream=%s swr=%s %s',
+        [BoolToStr(Context.Info.Audio.Present, True),
+         BoolToStr(Context.AudioCodecContext <> nil, True),
+         BoolToStr(Context.AudioStream <> nil, True),
+         BoolToStr(Context.SwrContext <> nil, True),
+         Context.Info.Audio.OpenError])
+    else
+      ErrorMessage := 'Audio decoder context is nil.';
     Exit;
   end;
 

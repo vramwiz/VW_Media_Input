@@ -836,3 +836,67 @@ image_size  4147200
   - QSVのNV12に近いため理論上は魅力があるが、AviUtl2 SDKコメントに対応形式として明記されていない。
   - 現時点ではYUY2の安定性と効果を優先する。
 
+## 2026-06-04 FFmpegDecoder 分散方針
+
+ここから先の `FFmpegDecoder` 分散は、視認性を落としすぎないために小さい段階で進める。
+
+方針:
+
+- 分散先ユニット名は `FFmpegDecoderxx` 形式に統一し、`FFmpegDecoder` のサブユニットであることを明確にする。
+- `TFFmpegDecoder` 自身を外部ユニットへ渡すのではなく、内包状態をまとめる `TFFmpegDecoderContext` を用意し、必要な処理へ Context を渡す方向にする。
+- 最初から全フィールドを大きく移動しない。まずは既に切り出した処理や、所有権が分かりやすい処理から Context 化する。
+- `TFFmpegDecoder` の公開 API は維持し、外部呼び出し側への影響を出さない。
+- デコード種類ごとの大きい実装は、将来的に `FFmpegDecoderNextRead` や `FFmpegDecoderSeekRead` などへ段階的に逃がす。
+- 1回の修正では必要最小限に留め、都度 Release / Win64 ビルドで確認する。
+
+実施:
+
+- 既存の分散ユニット名を `FFmpegDecoderAudioPlayback` / `FFmpegDecoderAudioRead` へ変更した。
+- `TFFmpegDecoderContext` を追加した。
+- まずは `FFmpegDecoderAudioRead` と `FFmpegDecoderResources` の引数束を Context 受け取りへ変更した。
+- `TFFmpegDecoder` 本体のフィールド移動はまだ行わず、`CreateContextSnapshot` / `ApplyContextResources` で橋渡しする段階に留めた。
+- 次段階として `TFFmpegDecoder` が `FContext` を所有する形へ変更した。
+  - `SyncContextFromFields` / `SyncFieldsFromContext` で既存フィールドとの同期を行う。
+  - まだ巨大なデコードメソッド群のフィールド参照は置換しない。
+  - `_PasCoreCompile` は成功。通常BuildはPostBuild時に配置先 `VW_Media_Input.aui2` が使用中でコピー失敗する場合がある。
+- `FFmpegDecoderAudioPlayback` も Context 受け取りへ変更した。
+- 将来のデコード種類別ユニット移動に備え、Context に `FileName` / `VideoDecoderName` / `VideoUsesQsv` も追加した。
+- `DecodeNextFrameToYc48Optional` を `FFmpegDecoderNextYc48` へ分離した。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - Context に `DecodeStats` を追加し、サブユニット側で統計更新できるようにした。
+  - `_PasCoreCompile` は成功。
+- `DecodeNextFrameToI420Optional` を `FFmpegDecoderNextI420` へ分離した。
+  - QSV frame transfer と stage統計を含むため、`FFmpegDecoderNextYc48` より複雑な分離例になった。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- 慎重ルートとして、現行採用のYUY2より先に `DecodeNextFrameToBgr24Optional` を `FFmpegDecoderNextBgr24` へ分離した。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- 現行採用経路の `DecodeNextFrameToYuy2Optional` を `FFmpegDecoderNextYuy2` へ分離した。
+  - `FFmpegDecoderNextI420` と同じQSV frame transfer + stage統計の構成。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- fallback/比較用の `DecodeNextFrameToBgrx32Optional` を `FFmpegDecoderNextBgrx32` へ分離した。
+  - QSV frame transfer + stage統計の構成。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- seek系の第一段階として `DecodeFrameToYc48` を `FFmpegDecoderSeekYc48` へ分離した。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- `DecodeFrameToI420` を `FFmpegDecoderSeekI420` へ分離した。
+  - `DecodeFrameToYc48` と同じseek系の構成で、変換先だけをI420として分けた。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- `DecodeFrameToBgr24` を `FFmpegDecoderSeekBgr24` へ分離した。
+  - seek系の比較/補助経路として、現行採用のYUY2より先に分離した。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- 現行採用経路の `DecodeFrameToYuy2` を `FFmpegDecoderSeekYuy2` へ分離した。
+  - seek系のYUY2変換処理を Context 受け取りのサブユニットへ移した。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+- fallback/比較用の `DecodeFrameToBgrx32` を `FFmpegDecoderSeekBgrx32` へ分離した。
+  - QSV frame transfer + stage統計の構成。
+  - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
+  - `_PasCoreCompile` は成功。
+
