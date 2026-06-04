@@ -43,20 +43,10 @@ type
     FDirectSwsSrcHeight  : Integer;                 // 直接出力用swsの入力高さ
     FDirectSwsSrcFormat  : Integer;                 // 直接出力用swsの入力ピクセル形式
     FDirectSwsDstFormat  : Integer;                 // 直接出力用swsの出力ピクセル形式
-    // 音声パケットをデコードし、デバッグ用にPCM再生と統計更新を行う
-    procedure DecodeAudioPacket(Packet: Pointer);
-    // waveOutで再生完了したPCMバッファを解放する
-    procedure CleanupAudioBuffers;
-    // PCMバッファをwaveOutへ渡す
-    procedure QueueAudioPcm(const Pcm: TBytes);
-    // PCMバッファから音量確認用の統計を更新する
-    procedure UpdateAudioStats(const Pcm: TBytes; SampleCount: Integer; PtsMs: Integer);
     // 映像デコード負荷の統計を更新する
     procedure UpdateVideoLoadStats(ElapsedMs: Double);
     // 映像処理時間をdecode/transfer/convertへ分けて統計更新する
     procedure UpdateVideoStageStats(TotalMs, DecodeMs, TransferMs, ConvertMs: Double);
-    // 音声デコード負荷の統計を更新する
-    procedure UpdateAudioLoadStats(ElapsedMs: Double);
   public
     // デコーダインスタンスを初期化する
     constructor Create;
@@ -111,8 +101,8 @@ type
 implementation
 
 uses
-  FFmpegApi, FFmpegAudioConvert, FFmpegAudioOpen, FFmpegDecodeStats, FFmpegFrameConvert,
-  FFmpegQsvDecode, FFmpegStreamInfo;
+  FFmpegApi, FFmpegAudioOpen, FFmpegAudioPlayback, FFmpegAudioRead, FFmpegDecodeStats,
+  FFmpegDecoderResources, FFmpegFrameConvert, FFmpegQsvDecode, FFmpegStreamInfo;
 
 const
 {$IFDEF DEBUG}
@@ -165,91 +155,13 @@ end;
 
 // 保持しているFFmpegリソースを解放する
 procedure TFFmpegDecoder.Close;
-var
-  CodecContext      : PAVCodecContext;  // 映像デコードコンテキスト解放用の型付きポインタ
-  AudioCodecContext : PAVCodecContext;  // 音声デコードコンテキスト解放用の型付きポインタ
-  FormatContext     : PAVFormatContext; // 入力フォーマットコンテキスト解放用の型付きポインタ
-  Packet            : PAVPacket;        // 再利用AVPacket解放用の型付きポインタ
-  Frame             : PAVFrame;         // 映像AVFrame解放用の型付きポインタ
-  TransferFrame     : PAVFrame;         // HW frame転送用AVFrame解放用の型付きポインタ
-  AudioFrame        : PAVFrame;         // 音声AVFrame解放用の型付きポインタ
-  SwrContext        : PSwrContext;      // 音声変換コンテキスト解放用の型付きポインタ
-  QsvDeviceContext  : PAVBufferRef;     // QSV device context解放用
 begin
   StopAudioPlayback;
 
-  if FDirectSwsContext <> nil then
-  begin
-    TFFmpegApi.sws_freeContext(PSwsContext(FDirectSwsContext));
-    FDirectSwsContext := nil;
-  end;
-  FDirectSwsSrcWidth := 0;
-  FDirectSwsSrcHeight := 0;
-  FDirectSwsSrcFormat := 0;
-  FDirectSwsDstFormat := 0;
-
-  Packet := PAVPacket(FPacket);
-  if Assigned(Packet) then
-  begin
-    TFFmpegApi.av_packet_free(@Packet);
-    FPacket := nil;
-  end;
-
-  Frame := PAVFrame(FFrame);
-  if Assigned(Frame) then
-  begin
-    TFFmpegApi.av_frame_free(@Frame);
-    FFrame := nil;
-  end;
-
-  TransferFrame := PAVFrame(FTransferFrame);
-  if Assigned(TransferFrame) then
-  begin
-    TFFmpegApi.av_frame_free(@TransferFrame);
-    FTransferFrame := nil;
-  end;
-
-  AudioFrame := PAVFrame(FAudioFrame);
-  if Assigned(AudioFrame) then
-  begin
-    TFFmpegApi.av_frame_free(@AudioFrame);
-    FAudioFrame := nil;
-  end;
-
-  SwrContext := PSwrContext(FSwrContext);
-  if Assigned(SwrContext) then
-  begin
-    TFFmpegApi.swr_free(@SwrContext);
-    FSwrContext := nil;
-  end;
-
-  AudioCodecContext := PAVCodecContext(FAudioCodecContext);
-  if Assigned(AudioCodecContext) then
-  begin
-    TFFmpegApi.avcodec_free_context(@AudioCodecContext);
-    FAudioCodecContext := nil;
-  end;
-
-  CodecContext := PAVCodecContext(FCodecContext);
-  if Assigned(CodecContext) then
-  begin
-    TFFmpegApi.avcodec_free_context(@CodecContext);
-    FCodecContext := nil;
-  end;
-
-  QsvDeviceContext := PAVBufferRef(FQsvDeviceContext);
-  if Assigned(QsvDeviceContext) then
-  begin
-    TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
-    FQsvDeviceContext := nil;
-  end;
-
-  FormatContext := PAVFormatContext(FFormatContext);
-  if Assigned(FormatContext) then
-  begin
-    TFFmpegApi.avformat_close_input(@FormatContext);
-    FFormatContext := nil;
-  end;
+  ReleaseDecoderResources(FDirectSwsContext, FDirectSwsSrcWidth, FDirectSwsSrcHeight,
+    FDirectSwsSrcFormat, FDirectSwsDstFormat, FPacket, FFrame, FTransferFrame,
+    FAudioFrame, FSwrContext, FAudioCodecContext, FCodecContext, FQsvDeviceContext,
+    FFormatContext);
 
   FFileName := '';
   FStream := nil;
@@ -277,87 +189,19 @@ begin
   FFmpegDecodeStats.UpdateVideoStageStats(FDecodeStats, TotalMs, DecodeMs, TransferMs, ConvertMs);
 end;
 
-// 音声デコード負荷の統計を更新する
-procedure TFFmpegDecoder.UpdateAudioLoadStats(ElapsedMs: Double);
-begin
-  FFmpegDecodeStats.UpdateAudioLoadStats(FDecodeStats, ElapsedMs);
-end;
-
 // デバッグ用の音声再生を開始する
 function TFFmpegDecoder.StartAudioPlayback(out ErrorMessage: string): Boolean;
-var
-  WaveFormat: TWaveFormatEx; // waveOutへ渡すPCM形式
-  Ret: MMRESULT; // waveOut APIの戻り値
 begin
-  ErrorMessage := '';
-  Result := False;
-
-  StopAudioPlayback;
-
-  if (not FInfo.Audio.Present) or (FAudioCodecContext = nil) or (FAudioStream = nil) or (FSwrContext = nil) then
-  begin
-    ErrorMessage := Format('Audio decoder is not open. present=%s codec=%s stream=%s swr=%s %s',
-      [BoolToStr(FInfo.Audio.Present, True),
-       BoolToStr(FAudioCodecContext <> nil, True),
-       BoolToStr(FAudioStream <> nil, True),
-       BoolToStr(FSwrContext <> nil, True),
-       FInfo.Audio.OpenError]);
-    Exit;
-  end;
-
-  FillChar(WaveFormat, SizeOf(WaveFormat), 0);
-  WaveFormat.wFormatTag := WAVE_FORMAT_PCM;
-  WaveFormat.nChannels := AUDIO_OUTPUT_CHANNELS;
-  WaveFormat.nSamplesPerSec := AUDIO_OUTPUT_SAMPLE_RATE;
-  WaveFormat.wBitsPerSample := 16;
-  WaveFormat.nBlockAlign := WaveFormat.nChannels * WaveFormat.wBitsPerSample div 8;
-  WaveFormat.nAvgBytesPerSec := WaveFormat.nSamplesPerSec * WaveFormat.nBlockAlign;
-
-  Ret := waveOutOpen(@FWaveOut, WAVE_MAPPER, @WaveFormat, 0, 0, CALLBACK_NULL);
-  if Ret <> MMSYSERR_NOERROR then
-  begin
-    FWaveOut := 0;
-    ErrorMessage := Format('waveOutOpen failed: %d', [Ret]);
-    Exit;
-  end;
-
-  FillChar(FAudioStats, SizeOf(FAudioStats), 0);
-  FAudioStats.LastPtsMs := -1;
-  FAudioPlaybackActive := True;
-  Result := True;
+  Result := FFmpegAudioPlayback.StartAudioPlayback(FWaveOut, FAudioPlaybackActive,
+    FAudioBuffers, FAudioStats, FInfo, FAudioCodecContext, FAudioStream,
+    FSwrContext, ErrorMessage);
 end;
 
 // デバッグ用の音声再生を停止する
 procedure TFFmpegDecoder.StopAudioPlayback;
-var
-  Buffer: PAudioWaveBuffer; // 解放対象のwaveOut用PCMバッファ
 begin
-  FAudioPlaybackActive := False;
-
-  if FWaveOut <> 0 then
-    waveOutReset(FWaveOut);
-
-  if FAudioBuffers <> nil then
-  begin
-    while FAudioBuffers.Count > 0 do
-    begin
-      Buffer := FAudioBuffers[FAudioBuffers.Count - 1];
-      if FWaveOut <> 0 then
-        waveOutUnprepareHeader(FWaveOut, @Buffer.Header, SizeOf(Buffer.Header));
-      if Buffer.Data <> nil then
-        FreeMem(Buffer.Data);
-      Dispose(Buffer);
-      FAudioBuffers.Delete(FAudioBuffers.Count - 1);
-    end;
-  end;
-
-  if FWaveOut <> 0 then
-  begin
-    waveOutClose(FWaveOut);
-    FWaveOut := 0;
-  end;
-
-  FAudioStats.QueuedBuffers := 0;
+  FFmpegAudioPlayback.StopAudioPlayback(FWaveOut, FAudioPlaybackActive,
+    FAudioBuffers, FAudioStats);
 end;
 
 // 動画を開いてデコード可能な状態にする
@@ -2495,212 +2339,25 @@ begin
   end;
 end;
 
-// waveOutで再生完了したPCMバッファを解放する
-procedure TFFmpegDecoder.CleanupAudioBuffers;
-var
-  I: Integer; // FAudioBuffersを後ろから走査するインデックス
-  Buffer: PAudioWaveBuffer; // 解放判定中のwaveOut用PCMバッファ
-begin
-  if FAudioBuffers = nil then
-    Exit;
-
-  for I := FAudioBuffers.Count - 1 downto 0 do
-  begin
-    Buffer := FAudioBuffers[I];
-    if (FWaveOut = 0) or ((Buffer.Header.dwFlags and WHDR_DONE) <> 0) then
-    begin
-      if FWaveOut <> 0 then
-        waveOutUnprepareHeader(FWaveOut, @Buffer.Header, SizeOf(Buffer.Header));
-      if Buffer.Data <> nil then
-        FreeMem(Buffer.Data);
-      Dispose(Buffer);
-      FAudioBuffers.Delete(I);
-    end;
-  end;
-
-  FAudioStats.QueuedBuffers := FAudioBuffers.Count;
-end;
-
-// PCMバッファをwaveOutへ渡す
-procedure TFFmpegDecoder.QueueAudioPcm(const Pcm: TBytes);
-var
-  Buffer: PAudioWaveBuffer; // waveOutへ渡す新規PCMバッファ
-begin
-  if (not FAudioPlaybackActive) or (FWaveOut = 0) or (Length(Pcm) = 0) then
-    Exit;
-
-  CleanupAudioBuffers;
-
-  New(Buffer);
-  FillChar(Buffer^, SizeOf(Buffer^), 0);
-  Buffer.Size := Length(Pcm);
-  GetMem(Buffer.Data, Buffer.Size);
-  Move(Pcm[0], Buffer.Data^, Buffer.Size);
-  Buffer.Header.lpData := PAnsiChar(Buffer.Data);
-  Buffer.Header.dwBufferLength := Buffer.Size;
-
-  if waveOutPrepareHeader(FWaveOut, @Buffer.Header, SizeOf(Buffer.Header)) <> MMSYSERR_NOERROR then
-  begin
-    FreeMem(Buffer.Data);
-    Dispose(Buffer);
-    Exit;
-  end;
-
-  if waveOutWrite(FWaveOut, @Buffer.Header, SizeOf(Buffer.Header)) <> MMSYSERR_NOERROR then
-  begin
-    waveOutUnprepareHeader(FWaveOut, @Buffer.Header, SizeOf(Buffer.Header));
-    FreeMem(Buffer.Data);
-    Dispose(Buffer);
-    Exit;
-  end;
-
-  FAudioBuffers.Add(Buffer);
-  FAudioStats.QueuedBuffers := FAudioBuffers.Count;
-end;
-
-// PCMバッファから音量確認用の統計を更新する
-procedure TFFmpegDecoder.UpdateAudioStats(const Pcm: TBytes; SampleCount: Integer; PtsMs: Integer);
-var
-  QueuedBuffers: Integer; // waveOutに渡して未完了のバッファ数
-begin
-  if FAudioBuffers <> nil then
-    QueuedBuffers := FAudioBuffers.Count
-  else
-    QueuedBuffers := 0;
-  FFmpegDecodeStats.UpdateAudioPlaybackStats(FAudioStats, Pcm, SampleCount, PtsMs, QueuedBuffers);
-end;
-
-// 音声パケットをデコードし、デバッグ用にPCM再生と統計更新を行う
-procedure TFFmpegDecoder.DecodeAudioPacket(Packet: Pointer);
-var
-  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト
-  AudioFrame: PAVFrame; // デコード結果を受け取る音声AVFrame
-  AudioStream: PAVStream; // 対象の音声ストリーム
-  Ret: Integer; // FFmpeg APIの戻り値
-  Pcm: TBytes; // 変換後のPCM16 stereo 48kHz
-  SampleCount: Integer; // 変換後PCMのサンプル数
-  PtsMs: Integer; // 音声フレームのミリ秒位置
-  Stopwatch: TStopwatch; // 音声処理負荷測定用タイマー
-begin
-  if (not FAudioPlaybackActive) or (Packet = nil) then
-    Exit;
-
-  AudioCodecContext := PAVCodecContext(FAudioCodecContext);
-  AudioFrame := PAVFrame(FAudioFrame);
-  AudioStream := PAVStream(FAudioStream);
-  if (AudioCodecContext = nil) or (AudioFrame = nil) or (AudioStream = nil) or (FSwrContext = nil) then
-    Exit;
-
-  Stopwatch := TStopwatch.StartNew;
-  try
-    Inc(FAudioStats.AudioPackets);
-    Ret := TFFmpegApi.avcodec_send_packet(AudioCodecContext, PAVPacket(Packet));
-    if Ret < 0 then
-    begin
-      Inc(FAudioStats.SendErrors);
-      Exit;
-    end;
-
-    while TFFmpegApi.avcodec_receive_frame(AudioCodecContext, AudioFrame) = 0 do
-    begin
-      if not ConvertAudioFrameToPcm16Stereo48k(AudioFrame, PSwrContext(FSwrContext),
-        FInfo.Audio.SampleRate, Pcm, SampleCount) then
-      begin
-        Inc(FAudioStats.ConvertErrors);
-        Continue;
-      end;
-
-      PtsMs := StreamTimestampToMs(AudioStream, AudioFrame.pts);
-      UpdateAudioStats(Pcm, SampleCount, PtsMs);
-      QueueAudioPcm(Pcm);
-    end;
-  finally
-    Stopwatch.Stop;
-    UpdateAudioLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
-  end;
-end;
-
 // 開いているファイルの音声を指定サンプル数までPCM16 stereo 48kHzへ順次デコードする
 function TFFmpegDecoder.DecodeAudioPcm16Stereo48kUntil(TargetSampleCount: Integer; var Pcm: TBytes; var SampleCount: Integer; out Finished: Boolean; out ErrorMessage: string): Boolean;
-var
-  FormatContext: PAVFormatContext; // 開いている入力コンテキスト
-  AudioCodecContext: PAVCodecContext; // 音声デコードコンテキスト
-  Packet: PAVPacket; // 読み込みに再利用するAVPacket
-  AudioFrame: PAVFrame; // デコード結果を受け取る音声AVFrame
-  Ret: Integer; // FFmpeg APIの戻り値
-  Chunk: TBytes; // 1フレーム分の変換後PCM
-  ChunkSampleCount: Integer; // Chunkに含まれるサンプル数
-  OldBytes: Integer; // 追記前のPCMバッファサイズ
-
-  // 受け取った音声AVFrameをPCMキャッシュの末尾へ追加する。
-  procedure AppendDecodedAudioFrame;
-  begin
-    if not ConvertAudioFrameToPcm16Stereo48k(AudioFrame, PSwrContext(FSwrContext),
-      FInfo.Audio.SampleRate, Chunk, ChunkSampleCount) then
-      Exit;
-
-    OldBytes := Length(Pcm);
-    SetLength(Pcm, OldBytes + Length(Chunk));
-    if Length(Chunk) > 0 then
-      Move(Chunk[0], Pcm[OldBytes], Length(Chunk));
-    Inc(SampleCount, ChunkSampleCount);
-  end;
-
 begin
-  ErrorMessage := '';
-  Finished := False;
-  Result := False;
-
-  if TargetSampleCount <= SampleCount then
-  begin
-    Result := True;
-    Exit;
-  end;
-
-  FormatContext := PAVFormatContext(FFormatContext);
-  AudioCodecContext := PAVCodecContext(FAudioCodecContext);
-  Packet := PAVPacket(FPacket);
-  AudioFrame := PAVFrame(FAudioFrame);
-
-  if (not FInfo.Audio.Present) or (AudioCodecContext = nil) or (Packet = nil) or
-     (AudioFrame = nil) or (FSwrContext = nil) or (FormatContext = nil) then
-  begin
-    ErrorMessage := 'Audio decoder is not open. ' + FInfo.Audio.OpenError;
-    Exit;
-  end;
-
-  try
-    while (SampleCount < TargetSampleCount) and (TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0) do
-    begin
-      try
-        if Packet.stream_index <> FAudioStreamIndex then
-          Continue;
-
-        Ret := TFFmpegApi.avcodec_send_packet(AudioCodecContext, Packet);
-        if Ret < 0 then
-          Continue;
-
-        while (SampleCount < TargetSampleCount) and (TFFmpegApi.avcodec_receive_frame(AudioCodecContext, AudioFrame) = 0) do
-          AppendDecodedAudioFrame;
-      finally
-        TFFmpegApi.av_packet_unref(Packet);
-      end;
-    end;
-
-    if SampleCount < TargetSampleCount then
-    begin
-      Ret := TFFmpegApi.avcodec_send_packet(AudioCodecContext, nil);
-      if Ret >= 0 then
-        while (SampleCount < TargetSampleCount) and (TFFmpegApi.avcodec_receive_frame(AudioCodecContext, AudioFrame) = 0) do
-          AppendDecodedAudioFrame;
-      Finished := True;
-    end;
-
-    Result := True;
-  except
-    on E: Exception do
-      ErrorMessage := E.ClassName + ': ' + E.Message;
-  end;
+  Result := FFmpegAudioRead.DecodeAudioPcm16Stereo48kUntil(
+    PAVFormatContext(FFormatContext),
+    PAVCodecContext(FAudioCodecContext),
+    PAVPacket(FPacket),
+    PAVFrame(FAudioFrame),
+    PSwrContext(FSwrContext),
+    FInfo.Audio.Present,
+    FInfo.Audio.OpenError,
+    FAudioStreamIndex,
+    FInfo.Audio.SampleRate,
+    TargetSampleCount,
+    Pcm,
+    SampleCount,
+    Finished,
+    ErrorMessage
+  );
 end;
 
 // 一時デコーダで動画情報だけを読む

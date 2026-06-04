@@ -130,7 +130,10 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="Plugin_Input\FFmpegDecoderTypes.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegAudioConvert.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegAudioOpen.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegAudioPlayback.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegAudioRead.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecodeStats.pas"/>
+        <DCCReference Include="Plugin_Input\FFmpegDecoderResources.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegFrameConvert.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegQsvDecode.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegStreamInfo.pas"/>
