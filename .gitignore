@@ -7,6 +7,11 @@ __history/
 *.bat 
 !Setup/*.bat
 *.dll 
+*.zip
+*.rsm
+*.aui2
+Setup/*.zip
+!Setup/*.txt
 *.map 
 *.tds 
 *.dsk 
