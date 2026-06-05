@@ -1,4 +1,4 @@
-unit FFmpegDecoderNextI420;
+﻿unit FFmpegDecoderNextI420;
 
 interface
 

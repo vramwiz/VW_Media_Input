@@ -111,7 +111,7 @@ uses
   FFmpegDecoderNextI420, FFmpegDecoderNextYuy2, FFmpegDecoderNextYc48,
   FFmpegDecoderResources, FFmpegDecoderSeekBgr24, FFmpegDecoderSeekBgrx32,
   FFmpegDecoderSeekI420, FFmpegDecoderSeekYuy2, FFmpegDecoderSeekYc48,
-  FFmpegFrameConvert, FFmpegQsvDecode, FFmpegStreamInfo;
+  FFmpegFrameConvert, FFmpegQsvDecode, FFmpegStreamInfo, PluginInputSettings;
 
 const
 {$IFDEF DEBUG}
@@ -294,6 +294,9 @@ var
   QsvErrorMessage   : string;
   OpenedWithQsv     : Boolean;
   VideoDecoderName  : string;
+  DecoderMode       : TVideoDecoderMode;
+  DecodeBackend     : string;
+  GpuInferred       : string;
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
@@ -312,6 +315,7 @@ begin
   AudioStreamIndex := -1;
   OpenedWithQsv := False;
   VideoDecoderName := '';
+  DecoderMode := GetVideoDecoderMode;
 
   try
     TFFmpegApi.EnsureLoaded;
@@ -365,7 +369,7 @@ begin
       OpenedWithQsv := False;
       VideoDecoderName := 'software';
       QsvDecoderName := QsvDecoderNameForCodecId(CodecPar.codec_id);
-      if QsvDecoderName <> '' then
+      if (DecoderMode <> vdmSoftware) and (QsvDecoderName <> '') then
       begin
         Codec := TFFmpegApi.avcodec_find_decoder_by_name(PAnsiChar(QsvDecoderName));
         if Assigned(Codec) and CreateQsvDevice(QsvDeviceContext, QsvErrorMessage) then
@@ -377,12 +381,27 @@ begin
         begin
           if not Assigned(Codec) then
             QsvErrorMessage := 'QSV decoder was not found.';
-          DecodeTrace(Format('qsv_fallback file="%s" decoder="%s" reason="%s"',
-            [FileName, string(QsvDecoderName), QsvErrorMessage]));
+          DecodeTrace(Format('qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False decoder="%s" reason="%s"',
+            [FileName, VideoDecoderModeToText(DecoderMode), string(QsvDecoderName), QsvErrorMessage]));
+          if DecoderMode = vdmQsv then
+          begin
+            ErrorMessage := QsvErrorMessage;
+            if Assigned(QsvDeviceContext) then
+              TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
+            Exit;
+          end;
           Codec := nil;
           if Assigned(QsvDeviceContext) then
             TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
         end;
+      end;
+      if (DecoderMode = vdmQsv) and (not OpenedWithQsv) then
+      begin
+        if QsvDecoderName = '' then
+          ErrorMessage := 'QSV decoder is not supported for this codec.'
+        else
+          ErrorMessage := 'QSV decoder could not be opened.';
+        Exit;
       end;
 
       if not Assigned(Codec) then
@@ -407,8 +426,16 @@ begin
       begin
         if OpenedWithQsv then
         begin
-          DecodeTrace(Format('qsv_fallback file="%s" decoder="%s" reason="%s"',
-            [FileName, VideoDecoderName, TFFmpegApi.ErrorText(Ret)]));
+          DecodeTrace(Format('qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False decoder="%s" reason="%s"',
+            [FileName, VideoDecoderModeToText(DecoderMode), VideoDecoderName, TFFmpegApi.ErrorText(Ret)]));
+          if DecoderMode = vdmQsv then
+          begin
+            ErrorMessage := TFFmpegApi.ErrorText(Ret);
+            TFFmpegApi.avcodec_free_context(@CodecContext);
+            if Assigned(QsvDeviceContext) then
+              TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
+            Exit;
+          end;
           TFFmpegApi.avcodec_free_context(@CodecContext);
           if Assigned(QsvDeviceContext) then
             TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
@@ -455,8 +482,20 @@ begin
         Exit;
       end;
 
-      DecodeTrace(Format('video_decoder file="%s" decoder="%s" qsv=%s codec_id=%d',
-        [FileName, VideoDecoderName, BoolToStr(OpenedWithQsv, True), CodecPar.codec_id]));
+      if OpenedWithQsv then
+      begin
+        DecodeBackend := 'qsv';
+        GpuInferred := 'Intel Quick Sync';
+      end
+      else
+      begin
+        DecodeBackend := 'software';
+        GpuInferred := 'none';
+      end;
+
+      DecodeTrace(Format('video_decoder file="%s" decode_mode=%s decode_backend=%s gpu_inferred="%s" nvidia_nvdec_supported=False decoder="%s" qsv=%s codec_id=%d',
+        [FileName, VideoDecoderModeToText(DecoderMode), DecodeBackend, GpuInferred,
+         VideoDecoderName, BoolToStr(OpenedWithQsv, True), CodecPar.codec_id]));
 
       Info.Width := CodecPar.width;
       Info.Height := CodecPar.height;

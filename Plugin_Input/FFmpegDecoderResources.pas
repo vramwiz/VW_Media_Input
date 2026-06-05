@@ -1,4 +1,4 @@
-unit FFmpegDecoderResources;
+﻿unit FFmpegDecoderResources;
 
 interface
 

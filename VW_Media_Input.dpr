@@ -28,7 +28,8 @@ uses
   FFmpegQsvDecode in 'Plugin_Input\FFmpegQsvDecode.pas',
   FFmpegStreamInfo in 'Plugin_Input\FFmpegStreamInfo.pas',
   FFmpegDecoder in 'Plugin_Input\FFmpegDecoder.pas',
-  PluginAudioInputReader in 'Plugin_Input\PluginAudioInputReader.pas';
+  PluginAudioInputReader in 'Plugin_Input\PluginAudioInputReader.pas',
+  PluginInputSettings in 'Plugin_Input\PluginInputSettings.pas';
 
 //------------------------------------------------------------------------------
 // ファイルを開く
@@ -97,7 +98,7 @@ const
 var
   Plugin: TInputPluginTable = (
     flag: INPUT_PLUGIN_FLAG_VIDEO or INPUT_PLUGIN_FLAG_AUDIO;
-    name: '動画/音声入力';
+    name: '動画IN';
     filefilter: MEDIA_FILE_FILTER;
     //filefilter: nil;
     information: '様々な動画/音声形式をAviUtl2上で扱うための軽量プラグイン';

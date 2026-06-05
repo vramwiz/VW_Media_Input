@@ -1,4 +1,4 @@
-unit FFmpegDecoderAudioPlayback;
+﻿unit FFmpegDecoderAudioPlayback;
 
 interface
 

@@ -4,7 +4,7 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>VCL</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Release</Config>
+        <Config Condition="'$(Config)'==''">Debug</Config>
         <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <ProjectName Condition="'$(ProjectName)'==''">VW_Media_Input</ProjectName>
         <TargetedPlatforms>3</TargetedPlatforms>
@@ -150,6 +150,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="Plugin_Input\FFmpegStreamInfo.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecoder.pas"/>
         <DCCReference Include="Plugin_Input\PluginAudioInputReader.pas"/>
+        <DCCReference Include="Plugin_Input\PluginInputSettings.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

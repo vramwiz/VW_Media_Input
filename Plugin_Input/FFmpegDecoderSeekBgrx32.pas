@@ -1,4 +1,4 @@
-unit FFmpegDecoderSeekBgrx32;
+﻿unit FFmpegDecoderSeekBgrx32;
 
 interface
 

@@ -900,3 +900,127 @@ image_size  4147200
   - `TFFmpegDecoder` 側は Context 同期後にサブユニットへ委譲するだけにした。
   - `_PasCoreCompile` は成功。
 
+## 2026-06-05 デコード方式の設定画面
+
+ハードウェアデコードが環境によってソフトウェアデコードより遅くなる可能性があるため、入力プラグインの設定画面から映像デコード方式を選べるようにした。
+
+追加内容:
+
+- `Plugin_Input\PluginInputSettings.pas` を追加。
+  - `func_config(hwnd, dll_hinst)` から呼ぶ WinAPI の小さなモーダル設定画面を持つ。
+  - 設定は `.aui2` と同じフォルダの `VW_Media_Input.ini` に保存する。
+- `Plugin_Input\PluginInputBase.pas`
+  - `PluginInputConfig` を MessageBox から設定画面呼び出しへ変更。
+- `Plugin_Input\FFmpegDecoder.pas`
+  - open時に設定値を読み、QSVを使うかソフトウェアに固定するかを切り替える。
+  - `video_decoder` / `qsv_fallback` ログに `decode_mode=...` を追加。
+- `VW_Media_Input.dpr` / `.dproj`
+  - `PluginInputSettings.pas` を登録。
+
+設定値:
+
+```ini
+[VW_Media_Input]
+VideoDecoderMode=auto
+```
+
+選択肢:
+
+- `auto`
+  - QSVを優先して試し、失敗した場合はソフトウェアデコードへfallbackする。
+  - 既定値。
+- `qsv`
+  - QSV固定。
+  - QSV decoderやdeviceが開けない場合はopen失敗にする。
+- `software`
+  - QSVを試さず、FFmpegの通常decoderを使う。
+
+確認:
+
+- Win64 Debug Build 成功。
+  - post-buildで `C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.aui2` へコピー成功。
+- Win64 Release Build 成功。
+- 最後にDebug版を再ビルドして配置済み。
+
+今後の比較方法:
+
+- 同じmp4を `auto` / `software` で読み込み、`%TEMP%\VW_Media_Input_decode.log` の以下を比較する。
+  - `decode_mode`
+  - `decode_backend`
+  - `gpu_inferred`
+  - `decoder`
+  - `decode_ms`
+  - `transfer_ms`
+  - `convert_ms`
+  - `read_video elapsed_ms`
+
+## 2026-06-05 GeForce搭載環境での処理落ち調査方針
+
+GeForce搭載PCで、入力プラグインのハードウェアデコードがソフトウェアデコードより遅くなる現象が出ている。
+
+重要な前提:
+
+- 現在の `VW_Media_Input` は NVIDIA/NVDEC デコードを実装していない。
+- ハードウェアデコードとして使うのは QSV、つまり Intel Quick Sync。
+- GeForceを搭載していても、入力プラグインのデコードで GeForce を直接使っているわけではない。
+- GeForceエンコードが遅い/速い問題は `VW_Media_Output` 側の問題で、入力デコードとは分けて比較する。
+
+想定される原因:
+
+- AviUtl2 が Windows/NVIDIA の設定で高パフォーマンスGPU、つまりGeForce側に割り当てられている。
+- 入力デコードは Intel QSV、表示/出力/他処理は GeForce 側になり、iGPU/dGPU/CPU 間の転送や同期で不利になる。
+- ノートPCの電源設定、GPU切替、ドライバ、Control Center設定で、QSVやメモリ帯域の挙動が変わる。
+- QSV decode自体ではなく、`NV12 -> YUY2` の `convert_ms` が重くなっている。
+
+ログ強化:
+
+- `video_decoder` ログに以下を追加した。
+  - `decode_backend=qsv/software`
+  - `gpu_inferred="Intel Quick Sync"` または `"none"`
+  - `nvidia_nvdec_supported=False`
+- `qsv_fallback` ログに以下を追加した。
+  - `attempted_backend=qsv`
+  - `attempted_gpu="Intel Quick Sync"`
+  - `nvidia_nvdec_supported=False`
+
+ログの読み方:
+
+```text
+decode_backend=qsv gpu_inferred="Intel Quick Sync"
+```
+
+Intel QSVでデコードしている。GeForce/NVDECは使っていない。
+
+```text
+decode_backend=software gpu_inferred="none"
+```
+
+CPUデコード。GPUデコードは使っていない。
+
+```text
+nvidia_nvdec_supported=False
+```
+
+この入力プラグインではNVDECデコードを実装していない、という意味。
+
+調査手順:
+
+1. 設定画面で `auto` にして同じmp4を読む。
+2. 設定画面で `software` にして同じmp4を読む。
+3. Windowsのグラフィック設定またはNVIDIAコントロールパネルで、AviUtl2を Intel 側/GeForce 側に切り替えて同じmp4を読む。
+4. `%TEMP%\VW_Media_Input_decode.log` の以下を比較する。
+   - `decode_backend`
+   - `gpu_inferred`
+   - `decode_ms`
+   - `transfer_ms`
+   - `convert_ms`
+   - `read_video elapsed_ms`
+
+判断:
+
+- `decode_backend=qsv` で `convert_ms` が重い場合は、QSV後のYUY2変換またはメモリ/電源/GPU切替が怪しい。
+- `decode_backend=software` の方が速い場合は、その環境では設定を `software` にする。
+- GeForceエンコードを使うべきかどうかは、入力側ログでは判断しない。
+  - 出力側で、同じプロジェクトを CPUエンコード / NVENC / QSVエンコード で別途比較する。
+  - 入力側のおすすめ設定と出力側のおすすめ設定は別々に決める。
+

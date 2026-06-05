@@ -24,7 +24,8 @@ function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 implementation
 
 uses
-  System.Diagnostics, System.Math, System.SyncObjs, FFmpegDecoderTypes, FFmpegDecoder, PluginAudioInputReader;
+  System.Diagnostics, System.Math, System.SyncObjs, FFmpegDecoderTypes, FFmpegDecoder,
+  PluginAudioInputReader, PluginInputSettings;
 
 const
   MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
@@ -692,8 +693,7 @@ end;
 
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 begin
-  MessageBox(hwnd, 'VW_Media_Input FFmpeg media input', 'VW_Media_Input', MB_OK);
-  Result := True;
+  Result := ShowPluginSettingsDialog(hwnd, hinst);
 end;
 
 initialization

@@ -1,4 +1,4 @@
-unit FFmpegDecoderContext;
+﻿unit FFmpegDecoderContext;
 
 interface
 

@@ -1,4 +1,4 @@
-unit FFmpegDecoderNextYc48;
+﻿unit FFmpegDecoderNextYc48;
 
 interface
 

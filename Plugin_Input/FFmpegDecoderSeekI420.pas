@@ -1,4 +1,4 @@
-unit FFmpegDecoderSeekI420;
+﻿unit FFmpegDecoderSeekI420;
 
 interface
 
