@@ -635,7 +635,9 @@ begin
         begin
           if (Frame.pts = AV_NOPTS_VALUE) or (Frame.pts >= TargetTs) then
           begin
-            CopyFrameToBitmap(Frame, Bitmap);
+            CopyFrameToBitmapCached(Frame, Bitmap, FDirectSwsContext,
+              FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat,
+              FDirectSwsDstFormat);
             Stopwatch.Stop;
             UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
             Result := True;
@@ -745,7 +747,9 @@ begin
 
         while TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0 do
         begin
-          CopyFrameToBitmap(Frame, Bitmap);
+          CopyFrameToBitmapCached(Frame, Bitmap, FDirectSwsContext,
+            FDirectSwsSrcWidth, FDirectSwsSrcHeight, FDirectSwsSrcFormat,
+            FDirectSwsDstFormat);
           Stopwatch.Stop;
           UpdateVideoLoadStats(Stopwatch.Elapsed.TotalMilliseconds);
           PositionMs := StreamTimestampToMs(Stream, Frame.pts);
