@@ -43,6 +43,7 @@ const
 {$IFDEF DEBUG}
   DECODE_TRACE_ENABLED = True; // Debug時だけデコードログ/計測を有効にする
   CLEAR_DECODE_TRACE_ON_OPEN = True; // Debug時だけ入力open時にデコードログを作り直す
+  READ_VIDEO_SLOW_MS = 16.0; // 60fps相当を超えるread_videoを調査用に目印化する
 {$ELSE}
   DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成や計測を含めない
   CLEAR_DECODE_TRACE_ON_OPEN = False; // Releaseではログクリアもしない
@@ -67,6 +68,14 @@ type
     LastDecodedFrame: Integer; // キャッシュしている直近のフレーム番号
     CachedFrame: TBytes; // 直近フレームのBGRx32キャッシュ
     LastError: string; // 直近のデコード/音声openエラー
+{$IFDEF DEBUG}
+    LastReadVideoRequestTick: Int64; // 前回read_video要求時刻
+    LastReadVideoRequestFrame: Integer; // 前回read_video要求フレーム
+    ReadVideoCallCount: Int64; // read_video実行回数
+    SlowReadVideoCount: Int64; // 調査しきい値を超えたread_video回数
+    ReadVideoTotalMs: Double; // read_video合計時間
+    ReadVideoMaxMs: Double; // read_video最大時間
+{$ENDIF}
   end;
 
   TSharedFrameCacheEntry = record
@@ -97,6 +106,16 @@ end;
 
 // Debug時のデコードログをTEMPへ追記する。
 procedure DecodeTrace(const Msg: string); forward;
+
+{$IFDEF DEBUG}
+function StopwatchTicksToMs(Ticks: Int64): Double;
+begin
+  if TStopwatch.Frequency <= 0 then
+    Result := 0
+  else
+    Result := Ticks * 1000.0 / TStopwatch.Frequency;
+end;
+{$ENDIF}
 
 // 入力openごとのデコードログを初期化する。
 procedure ClearDecodeTraceLog(const Reason: string);
@@ -397,6 +416,7 @@ begin
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
       ClearDecodeTraceLog(Format('file="%s"', [Ctx^.FileName]));
+    Ctx^.LastReadVideoRequestFrame := -1;
 {$ENDIF}
     Ctx^.LastDecodedFrame := -1;
 
@@ -505,10 +525,30 @@ begin
 end;
 
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
+{$IFDEF DEBUG}
+var
+  Ctx: PFileContext;
+  Stats: TDecodeLoadStats;
+{$ENDIF}
 begin
   Result := False;
   if ih = nil then
     Exit;
+
+{$IFDEF DEBUG}
+  Ctx := PFileContext(ih);
+  if DECODE_TRACE_ENABLED and (Ctx^.Decoder <> nil) then
+  begin
+    Stats := Ctx^.Decoder.DecodeStats;
+    DecodeTrace(Format('close_summary file="%s" read_video_calls=%d read_video_slow=%d read_video_avg_ms=%.3f read_video_max_ms=%.3f decoder_video_frames=%d decoder_avg_ms=%.3f decoder_max_ms=%.3f decode_avg_ms=%.3f decode_max_ms=%.3f transfer_avg_ms=%.3f transfer_max_ms=%.3f convert_avg_ms=%.3f convert_max_ms=%.3f',
+      [Ctx^.FileName, Ctx^.ReadVideoCallCount, Ctx^.SlowReadVideoCount,
+       IfThen(Ctx^.ReadVideoCallCount > 0, Ctx^.ReadVideoTotalMs / Ctx^.ReadVideoCallCount, 0.0),
+       Ctx^.ReadVideoMaxMs, Stats.VideoFrames, Stats.VideoAverageMs, Stats.VideoMaxMs,
+       Stats.VideoDecodeAverageMs, Stats.VideoDecodeMaxMs,
+       Stats.VideoTransferAverageMs, Stats.VideoTransferMaxMs,
+       Stats.VideoConvertAverageMs, Stats.VideoConvertMaxMs]));
+  end;
+{$ENDIF}
 
   FreeFileContext(PFileContext(ih));
   Result := True;
@@ -557,6 +597,11 @@ var
   ForwardFrame: Integer;
 {$IFDEF DEBUG}
   StartTick: TStopwatch;
+  RequestTick: Int64;
+  RequestIntervalMs: Double;
+  ReadElapsedMs: Double;
+  ExpectedFrameMs: Double;
+  IsSlowRead: Boolean;
 {$ENDIF}
   DecodeRoute: string;
 begin
@@ -571,6 +616,22 @@ begin
   if frame < 0 then
     frame := 0;
   ImageSize := VideoImageSize(Ctx);
+
+{$IFDEF DEBUG}
+  if DECODE_TRACE_ENABLED then
+  begin
+    RequestTick := TStopwatch.GetTimeStamp;
+    if Ctx^.LastReadVideoRequestTick > 0 then
+      RequestIntervalMs := StopwatchTicksToMs(RequestTick - Ctx^.LastReadVideoRequestTick)
+    else
+      RequestIntervalMs := -1;
+    DecodeTrace(Format('read_video_request file="%s" frame=%d prev_request_frame=%d request_gap=%d interval_ms=%.3f last_decoded=%d',
+      [Ctx^.FileName, frame, Ctx^.LastReadVideoRequestFrame,
+       frame - Ctx^.LastReadVideoRequestFrame, RequestIntervalMs, Ctx^.LastDecodedFrame]));
+    Ctx^.LastReadVideoRequestTick := RequestTick;
+    Ctx^.LastReadVideoRequestFrame := frame;
+  end;
+{$ENDIF}
 
   if (frame = Ctx^.LastDecodedFrame) and (Length(Ctx^.CachedFrame) = ImageSize) then
   begin
@@ -656,9 +717,29 @@ begin
 
 {$IFDEF DEBUG}
   if DECODE_TRACE_ENABLED then
+  begin
+    ReadElapsedMs := StartTick.Elapsed.TotalMilliseconds;
+    Inc(Ctx^.ReadVideoCallCount);
+    Ctx^.ReadVideoTotalMs := Ctx^.ReadVideoTotalMs + ReadElapsedMs;
+    if ReadElapsedMs > Ctx^.ReadVideoMaxMs then
+      Ctx^.ReadVideoMaxMs := ReadElapsedMs;
+    if Ctx^.Rate > 0 then
+      ExpectedFrameMs := Ctx^.Scale * 1000.0 / Ctx^.Rate
+    else
+      ExpectedFrameMs := 0;
+    IsSlowRead := (ReadElapsedMs >= READ_VIDEO_SLOW_MS) or
+      ((ExpectedFrameMs > 0) and (ReadElapsedMs >= ExpectedFrameMs));
+    if IsSlowRead then
+      Inc(Ctx^.SlowReadVideoCount);
     DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=%s ok=%s elapsed_ms=%.3f image_size=%d pos_ms=%d err=%s',
       [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute, BoolToStr(Decoded, True),
-       StartTick.Elapsed.TotalMilliseconds, ImageSize, PositionMs, ErrorMessage]));
+       ReadElapsedMs, ImageSize, PositionMs, ErrorMessage]));
+    if IsSlowRead then
+      DecodeTrace(Format('read_video_slow file="%s" frame=%d last=%d gap=%d route=%s elapsed_ms=%.3f frame_budget_ms=%.3f threshold_ms=%.3f pos_ms=%d ok=%s err=%s',
+        [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute,
+         ReadElapsedMs, ExpectedFrameMs, READ_VIDEO_SLOW_MS, PositionMs,
+         BoolToStr(Decoded, True), ErrorMessage]));
+  end;
 {$ENDIF}
 
   if not Decoded then

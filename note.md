@@ -1024,3 +1024,93 @@ nvidia_nvdec_supported=False
   - 出力側で、同じプロジェクトを CPUエンコード / NVENC / QSVエンコード で別途比較する。
   - 入力側のおすすめ設定と出力側のおすすめ設定は別々に決める。
 
+## 2026-06-05 QSVかくつき調査用Debugログ
+
+ソフトウェアデコードでは一部mp4のかくつきが抑えられるが、ハードウェアデコード(QSV)ではかくつくケースがあるため、Debugビルド限定で追加ログを入れた。
+
+追加内容:
+
+- `Plugin_Input\PluginInputBase.pas`
+  - `read_video_request` を追加。
+    - AviUtl2からの要求フレーム、前回要求フレーム、要求間隔、直近デコード済みフレームを出す。
+  - `read_video_slow` を追加。
+    - `read_video` が16ms以上、または対象fpsの1フレーム時間以上かかった場合に出す。
+  - `close_summary` を追加。
+    - close時に `read_video` 回数、slow回数、平均/最大、decoder側のdecode/transfer/convert平均/最大を出す。
+- `Plugin_Input\FFmpegDecoderNextYuy2.pas`
+  - `next_decode_yuy2` に `hw_transfer` と `slow_stage` を追加。
+  - 16ms以上のYUY2順方向デコードでは `next_decode_yuy2_slow` を出す。
+- `Plugin_Input\FFmpegDecoderSeekYuy2.pas`
+  - `seek_decode_yuy2` に `hw_transfer` と `slow_stage` を追加。
+  - 16ms以上のYUY2 seekデコードでは `seek_decode_yuy2_slow` を出す。
+
+ログの見方:
+
+- `read_video_slow` が出るフレームを探す。
+- 直後または直前の `next_decode_yuy2_slow` / `seek_decode_yuy2_slow` を見る。
+- `stage="decode"` ならQSVデコード待ちが怪しい。
+- `stage="transfer"` ならHW frame転送が怪しい。
+- `stage="convert"` ならQSV後のYUY2変換、メモリ帯域、GPU切替/同期が怪しい。
+- `read_video_request interval_ms` が大きい場合は、入力プラグイン外側(AviUtl2側処理や出力側)で詰まっている可能性も見る。
+
+ビルド確認:
+
+- Win64 Debug `_PasCoreCompile` 成功。
+- Win64 Release `_PasCoreCompile` 成功。
+- Win64 Debug `Build` はコンパイル本体成功。
+  - post-build の `.dll -> .aui2` コピーで、配置済み `VW_Media_Input.aui2` が使用中のため失敗。
+  - AviUtl2を閉じてから再Buildすればコピーできる想定。
+
+## 2026-06-05 QSVかくつき再現ログからの原因
+
+AviUtl2側で、ハードウェアデコード(QSV)使用時に1フレームの処理に間に合わず、カーソルが数フレーム飛ぶ現象をDebugログで確認した。
+
+結論:
+
+- QSVの通常の順方向デコード自体は速い。
+- ただし、素材切り替え、open直後、初回seek、seek後decodeで300-400ms級の待ちが出る。
+- 24fps素材では1フレーム約41.7msなので、300-400ms待つと数フレーム飛ぶ。
+- そのため、AviUtl2のプレビュー中に別mp4のQSV open/初回seekが同期的に走ると、現在再生中の素材の次フレーム要求が飛ばされる。
+- ソフトウェアデコードでかくつきが抑えられるのは、このQSV初動待ちが出にくいためと考えられる。
+
+代表ログ:
+
+```text
+seek_decode_yuy2_slow ... qsv=True stage="decode" elapsed_ms=361.070 decode_ms=357.685 transfer_ms=0.000 convert_ms=1.120
+read_video_slow ... frame=53 last=-1 gap=54 route=seek elapsed_ms=365.326 frame_budget_ms=41.667
+
+seek_decode_yuy2_slow ... qsv=True stage="decode" elapsed_ms=319.407 decode_ms=318.249 transfer_ms=0.000 convert_ms=0.816
+read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=320.239 frame_budget_ms=41.667
+
+seek_decode_yuy2_slow ... qsv=True stage="decode" elapsed_ms=412.723 decode_ms=411.397 transfer_ms=0.000 convert_ms=0.775
+read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=413.718 frame_budget_ms=41.667
+```
+
+重要な読み取り:
+
+- `stage="decode"` なので、遅いのはQSV decode側。
+- `transfer_ms=0.000` なので、HW frame転送待ちではない。
+- `convert_ms` は約1ms前後なので、YUY2変換が主因ではない。
+- `decode_backend=qsv gpu_inferred="Intel Quick Sync"` なので、GeForce/NVDECではなくIntel QSV。
+
+カーソル飛びの具体例:
+
+```text
+20:18:20.726 read_video_request ... 3Gk5BysREY.mp4 frame=48
+20:18:20.732 log_keep ... jS8BKu5LD0.mp4
+20:18:20.961 video_decoder ... jS8BKu5LD0.mp4 decode_backend=qsv
+20:18:20.962 open ok ... jS8BKu5LD0.mp4
+20:18:20.986 read_video_request ... 3Gk5BysREY.mp4 frame=53 request_gap=5
+```
+
+この間に、再生中だった `3Gk5BysREY.mp4` の要求が `frame=48 -> frame=53` に飛んでいる。
+`frame=53` の `read_video` 自体は約10msで、24fpsの1フレーム予算内に収まっている。
+したがって、直接の問題はそのフレームの変換処理ではなく、直前に別素材のQSV open/初回処理が走ってAviUtl2側の再生タイミングが崩れたことと見る。
+
+現時点の判断:
+
+- プレビュー安定性を優先する場合は `VideoDecoderMode=software` が有力。
+- QSVは単一素材の順方向デコードでは速いが、複数mp4が並ぶプロジェクトや素材切り替えが多い場面では初動待ちが不利。
+- `auto` のままだとQSVが選ばれ、この環境ではカーソル飛びが再発する可能性がある。
+- 今後対策するなら、QSVの初回seek/openが一定以上遅い環境や素材では自動的にsoftwareへ倒す、またはプレビュー用途ではsoftware推奨にする。
+
