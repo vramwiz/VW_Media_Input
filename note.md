@@ -1114,3 +1114,145 @@ read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=413.718 frame_bu
 - `auto` のままだとQSVが選ばれ、この環境ではカーソル飛びが再発する可能性がある。
 - 今後対策するなら、QSVの初回seek/openが一定以上遅い環境や素材では自動的にsoftwareへ倒す、またはプレビュー用途ではsoftware推奨にする。
 
+## 2026-06-17 ProRes 4444 alpha 入力の初期対応
+
+背景:
+
+- `VW_Media_Output` 側で、透過保持用に `MOV / ProRes 4444 / PA64 -> yuva444p10le` の専用出力モードを追加した。
+- Windows標準メディアプレーヤーでは ProRes 4444 alpha MOV を再生できないことがあるため、確認は `VW_Media_Input` でAviUtl2へ読み戻して行う必要がある。
+- 通常素材の高速な `YUY2` 入力経路は維持し、alpha がありそうな素材だけ別の映像出力形式へ切り替える。
+
+方針:
+
+- FFmpeg の `AVCodecParameters.format` から pixel format 名を取得する。
+- `yuva*` / `rgba` / `bgra` / `argb` / `abgr` / `gbrap*` / `ya*` を alpha あり候補として扱う。
+- alpha あり候補のファイルだけ、AviUtl2へ `RGBA32` 相当として返す。
+  - `BITMAPINFOHEADER.biBitCount = 32`
+  - `BITMAPINFOHEADER.biCompression = BI_RGB`
+  - デコードフレームは既存の `AV_PIX_FMT_BGRA` 変換経路を使う。
+- alpha なし素材は従来どおり `VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_YUY2` のまま。
+
+変更内容:
+
+- `Plugin_Input\FFmpegApi.pas`
+  - `av_get_pix_fmt_name` を追加。
+  - `PixelFormatName` を追加。
+- `Plugin_Input\FFmpegDecoderTypes.pas`
+  - `TVideoInfo` に `PixelFormat` / `PixelFormatName` / `HasAlpha` を追加。
+- `Plugin_Input\FFmpegDecoder.pas`
+  - open時に pixel format 名と alpha 候補を判定。
+  - Debugログ `video_decoder` に `pix_fmt="..." alpha=True/False` を追加。
+- `Plugin_Input\PluginInputBase.pas`
+  - ファイル単位の `VideoOutputFormat` を追加。
+  - `VideoInfo.HasAlpha=True` のときだけ `VIDEO_OUTPUT_RGBA32` へ切り替える。
+  - 通常素材は従来の `YUY2` 経路を維持する。
+  - Debugログ `open ok` に `pix_fmt` / `alpha` / `output_format` を追加。
+
+確認:
+
+- Win64 Debug Build 成功。
+  - 警告 2、エラー 0。
+  - 既存のヒント系警告のみ。
+  - post-buildで `C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.aui2` へコピー成功。
+- Win64 Release Build 成功。
+  - 警告 1、エラー 0。
+  - 既存の未使用 private method ヒントのみ。
+  - post-buildで `C:\ProgramData\aviutl2\Plugin\VW_Media_Input\VW_Media_Input.aui2` へコピー成功。
+
+次の実機確認:
+
+- `VW_Media_Output` の `Alpha MOV / ProRes 4444` で出した `.mov` を AviUtl2 へ読み込む。
+- `%TEMP%\VW_Media_Input_decode.log` で以下を確認する。
+  - `pix_fmt="yuva..."` または alpha 付き形式になっているか。
+  - `alpha=True` になっているか。
+  - `output_format=5` になっているか。
+- AviUtl2 上で背景を敷いて、透過部分が黒塗りではなく抜けて見えるか確認する。
+- もし alpha が落ちる場合は、AviUtl2 が `BI_RGB 32bit` を alpha 付きとして扱っていない可能性があるため、次は `PA64` 入力返却への切り替えを検討する。
+
+## コメント記述ルール
+
+基本方針:
+
+- コメントは、処理を読めば分かることをなぞるのではなく、目的、責務、注意点、状態の意味を補うために書く。
+- 古い仕様や現在の実装と食い違うコメントは、見つけた時点で更新する。
+- 不要なコメントや重複したコメントを増やしすぎない。
+- `var` ブロック内にローカル関数やローカル手続きを内包しない。
+  - 補助処理が必要な場合は、同じ `implementation` 内の独立した関数/手続きとして切り出す。
+  - この形を見つけた場合は、コメント追加だけで済ませず構造も直す。
+
+ユニット先頭:
+
+- 各ユニットの先頭には、そのユニットの目的や担当範囲を `//` コメントで記述する。
+- 依存関係や「ここには書かない処理」が重要な場合は、その注意も先頭コメントに含める。
+
+フィールド:
+
+- フィールドの意味は、フィールド宣言の右側に 1 行コメントとして `//` で書く。
+- 同じブロック内では、フィールド名の後ろに置く型区切りの `:` の X 座標を揃える。
+- 同じブロック内では、`//` の X 座標を揃える。
+- コメント本文の先頭に `file:` や `playback:` のような分類ラベルは付けない。
+- コメント本文は、そのフィールド単体の意味を自然な日本語で書く。
+- 同じクラス内で長い共通接頭辞を持つフィールドが並び、コメントや整列を読みにくくしている場合は、接頭辞を削ってよい。
+  - 例: `FAutoCheckDarkStartMs` は、自動チェック専用 manager 内なら `FDarkStartMs` にしてよい。
+  - ただし `property ... read/write ...` で外部公開名と対応している backing field は、無理に短縮しない。
+  - この程度のフィールド名変更が必要なら、コメントだけで済ませずコードも追従する。
+- 例:
+
+```pascal
+FVideoFile      : string;  // 現在開いている動画ファイル
+FSeekPositionMs : Integer; // UI 側で保持する現在位置 ms
+FSeekMaxMs      : Integer; // シーク可能な最大位置 ms
+```
+
+定数:
+
+- 定数の意味は、定数宣言の右側に 1 行コメントとして `//` で書く。
+- 同じ `const` ブロック内では、`=` の X 座標を揃える。
+- 同じ `const` ブロック内では、`//` の X 座標を揃える。
+- コメント本文は、その定数が判定や処理で何の基準になるかを自然な日本語で書く。
+- 同じユニット内だけで使う定数は、長い共通接頭辞やユニット内の文脈で明らかな語を削ってよい。
+  - 例: 自動チェック専用 manager 内なら `AUTO_CHECK_AUDIO_SILENCE_PEAK` は `SILENCE_PEAK` にしてよい。
+  - 外部公開される定数や、他ユニットから参照される可能性がある定数では、意味が衝突しない名前を優先する。
+  - この程度の定数名変更が必要なら、コメントだけで済ませずコードも追従する。
+- 例:
+
+```pascal
+VIDEO_AUDIO_SYNC_LAG_MS       = 60;   // 音声同期のためにフレーム破棄を検討する遅れ幅 ms
+VIDEO_DEFAULT_FRAME_DURATION  = 33;   // FPS 不明時に使う既定フレーム長 ms
+VIDEO_END_TOLERANCE_MS        = 1500; // 終端付近として扱う残り時間 ms
+```
+
+プロパティ:
+
+- `property` 宣言は、横幅 112 文字以内に収まる場合は折り返さない。
+- 112 文字を超える場合だけ、既存の Delphi コードの読みやすい位置で折り返す。
+
+メソッド:
+
+- メソッドの意味は、メソッド宣言または実装の上に 1 行コメントとして書く。
+- `procedure` / `function` 宣言は、横幅 112 文字以内に収まる場合は折り返さない。
+- 112 文字を超える場合だけ、既存の Delphi コードの読みやすい位置で折り返す。
+- 引数の意味が複雑な場合は、複数行コメントにしてよい。
+- コメントと対象メソッドの間に空行は入れない。
+- 例:
+
+```pascal
+// 指定位置へシークし、必要なら再生状態を復元する
+procedure SeekToMs(PositionMs: Integer; ResumeIfPlaying: Boolean = True);
+```
+
+複雑な引数がある場合:
+
+```pascal
+// フレームを表示用 BGRX32 バッファへ直接デコードする
+// Buffer       : 出力先バッファ先頭
+// BufferStride : 1 行あたりのバイト数
+function PrepareFrameBuffer(Decoder: TFFmpegDecoder; out Buffer: Pointer;
+  out BufferStride: Integer; out ErrorMessage: string): Boolean;
+```
+
+空行:
+
+- コメントと対象の宣言/実装の間には空行を入れない。
+- コメントブロック内でも、意味の切れ目が明確に必要な場合以外は空行を入れない。
+

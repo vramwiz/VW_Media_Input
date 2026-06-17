@@ -1,11 +1,14 @@
-unit FFmpegDecodeStats;
+﻿unit FFmpegDecodeStats;
+
+// 映像/音声decodeの負荷統計と、音声確認用のPCM統計を更新する。
+// 実際のdecodeや変換は行わず、計測値をrecordへ集約するだけに留める。
 
 interface
 
 uses
   System.SysUtils, FFmpegDecoderTypes;
 
-// 映像処理合計時間の統計を更新する。
+// 映像処理の合計時間統計を更新する。
 procedure UpdateVideoLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
 // 映像処理時間をdecode/transfer/convertへ分けて統計更新する。
 procedure UpdateVideoStageStats(var Stats: TDecodeLoadStats; TotalMs, DecodeMs,
@@ -34,7 +37,7 @@ begin
     MaxMs := ElapsedMs;
 end;
 
-// 映像処理合計時間の統計を更新する。
+// 映像処理の合計時間統計を更新する。
 procedure UpdateVideoLoadStats(var Stats: TDecodeLoadStats; ElapsedMs: Double);
 begin
   UpdateMovingMax(Stats.VideoLastMs, Stats.VideoAverageMs, Stats.VideoMaxMs,

@@ -1,5 +1,8 @@
 ﻿unit FFmpegDecoderSeekYuy2;
 
+// 指定位置へseekし、映像フレームをYUY2バッファへ直接変換する。
+// Debug時は失敗理由とdecode/transfer/convertの遅い段階を詳しくログへ記録する。
+
 interface
 
 uses
@@ -21,13 +24,14 @@ uses
 
 const
 {$IFDEF DEBUG}
-  DECODE_TRACE_ENABLED = True;
-  YUY2_SLOW_TOTAL_MS = 16.0;
-  YUY2_SLOW_STAGE_MS = 8.0;
+  DECODE_TRACE_ENABLED = True; // Debug時だけデコードログを出す
+  YUY2_SLOW_TOTAL_MS  = 16.0; // 1frame処理全体を遅いとみなすしきい値
+  YUY2_SLOW_STAGE_MS  = 8.0;  // 個別stageを遅いとみなすしきい値
 {$ELSE}
-  DECODE_TRACE_ENABLED = False;
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成を避ける
 {$ENDIF}
 
+// Debug時のデコードログをTEMPへ追記する。
 procedure DecodeTrace(const Msg: string);
 var
   F: TextFile;
@@ -159,13 +163,24 @@ var
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
     begin
-      DecodeTrace(Format('seek_decode_yuy2 file="%s" decoder="%s" qsv=%s pos_ms=%d target_ts=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d hw_transfer=%s slow_stage="%s" elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+      DecodeTrace(Format(
+        'seek_decode_yuy2 file="%s" decoder="%s" qsv=%s pos_ms=%d ' +
+        'target_ts=%d frame_pts=%d read_packets=%d video_packets=%d ' +
+        'decoded_frames=%d src_fmt=%d dst_fmt=%d hw_transfer=%s ' +
+        'slow_stage="%s" elapsed_ms=%.3f decode_ms=%.3f ' +
+        'transfer_ms=%.3f convert_ms=%.3f',
         [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True),
          PositionMs, TargetTs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
-         ConvertSourceFrame.format, Context.DirectSwsDstFormat, BoolToStr(DidTransfer, True), SlowStage,
-         TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs]));
+          ConvertSourceFrame.format, Context.DirectSwsDstFormat,
+          BoolToStr(DidTransfer, True), SlowStage,
+          TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs,
+          TransferElapsedMs, ConvertElapsedMs]));
       if SlowStage <> '' then
-        DecodeTrace(Format('seek_decode_yuy2_slow file="%s" decoder="%s" qsv=%s stage="%s" pos_ms=%d target_ts=%d frame_pts=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f read_packets=%d video_packets=%d decoded_frames=%d',
+        DecodeTrace(Format(
+          'seek_decode_yuy2_slow file="%s" decoder="%s" qsv=%s stage="%s" ' +
+          'pos_ms=%d target_ts=%d frame_pts=%d elapsed_ms=%.3f ' +
+          'decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f read_packets=%d ' +
+          'video_packets=%d decoded_frames=%d',
           [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True),
            SlowStage, PositionMs, TargetTs, Frame.pts,
            TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs, TransferElapsedMs,
@@ -343,7 +358,12 @@ begin
 {$ENDIF}
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
-      DecodeTrace(Format('seek_decode_yuy2_failed file="%s" decoder="%s" qsv=%s pos_ms=%d target_ts=%d read_packets=%d video_packets=%d decoded_frames=%d last_pts=%d last_fmt=%d packet_send_ret=%d packet_send_err="%s" drain_ret=%d drain_err="%s" receive_ret=%d receive_err="%s" elapsed_ms=%.3f decode_ms=%.3f',
+      DecodeTrace(Format(
+        'seek_decode_yuy2_failed file="%s" decoder="%s" qsv=%s pos_ms=%d ' +
+        'target_ts=%d read_packets=%d video_packets=%d decoded_frames=%d ' +
+        'last_pts=%d last_fmt=%d packet_send_ret=%d packet_send_err="%s" ' +
+        'drain_ret=%d drain_err="%s" receive_ret=%d receive_err="%s" ' +
+        'elapsed_ms=%.3f decode_ms=%.3f',
         [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True),
          PositionMs, TargetTs, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
          LastFramePts, LastFrameFmt, LastPacketSendRet, TFFmpegApi.ErrorText(LastPacketSendRet),

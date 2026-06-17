@@ -28,74 +28,77 @@ uses
   PluginAudioInputReader, PluginInputSettings;
 
 const
-  MAX_FORWARD_DECODE_GAP = 120; // 近い前方ジャンプはseekせず順方向デコードで追いつく
-  SHARED_FRAME_CACHE_CAPACITY = 16; // ファイル間共有フレームキャッシュの最大保持数
-  VIDEO_OUTPUT_BGRX32 = 0; // AviUtl2へ32bit BGRxで返す形式
-  VIDEO_OUTPUT_BGR24 = 1; // AviUtl2へ24bit BGRで返す形式
-  VIDEO_OUTPUT_YUY2 = 2; // AviUtl2へYUY2で返す形式
-  VIDEO_OUTPUT_I420 = 3; // AviUtl2へI420で返す試験用形式
-  VIDEO_OUTPUT_YC48 = 4; // AviUtl2へYC48で返す試験用形式
-  VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_YUY2; // 現在採用するAviUtl2向け映像形式
-  ENABLE_REUSABLE_DECODER = False; // 終了時にQSVリソースを残さないためデコーダ再利用を抑止
-  BI_YUY2 = $32595559; // 'YUY2'
-  BI_I420 = $30323449; // 'I420'
-  BI_YC48 = $38344359; // 'YC48'
+  MAX_FORWARD_DECODE_GAP      = 120;               // 近い前方ジャンプを順方向decodeで追う最大frame数
+  SHARED_FRAME_CACHE_CAPACITY = 16;                // ファイル間共有フレームキャッシュの最大保持数
+  VIDEO_OUTPUT_BGRX32         = 0;                 // AviUtl2へ32bit BGRxで返す形式
+  VIDEO_OUTPUT_BGR24          = 1;                 // AviUtl2へ24bit BGRで返す形式
+  VIDEO_OUTPUT_YUY2           = 2;                 // AviUtl2へYUY2で返す形式
+  VIDEO_OUTPUT_I420           = 3;                 // AviUtl2へI420で返す試験用形式
+  VIDEO_OUTPUT_YC48           = 4;                 // AviUtl2へYC48で返す試験用形式
+  VIDEO_OUTPUT_RGBA32         = 5;                 // AviUtl2へ透過保持用32bit RGBA/BGRAで返す形式
+  VIDEO_OUTPUT_FORMAT         = VIDEO_OUTPUT_YUY2; // 現在採用するAviUtl2向け映像形式
+  ENABLE_REUSABLE_DECODER     = False;             // 終了時にQSVリソースを残さないため再利用を抑止
+  BI_YUY2                     = $32595559;         // 'YUY2'
+  BI_I420                     = $30323449;         // 'I420'
+  BI_YC48                     = $38344359;         // 'YC48'
 {$IFDEF DEBUG}
-  DECODE_TRACE_ENABLED = True; // Debug時だけデコードログ/計測を有効にする
-  CLEAR_DECODE_TRACE_ON_OPEN = True; // Debug時だけ入力open時にデコードログを作り直す
-  READ_VIDEO_SLOW_MS = 16.0; // 60fps相当を超えるread_videoを調査用に目印化する
+  DECODE_TRACE_ENABLED        = True;  // Debug時だけデコードログ/計測を有効にする
+  CLEAR_DECODE_TRACE_ON_OPEN  = True;  // Debug時だけ入力open時にデコードログを作り直す
+  READ_VIDEO_SLOW_MS          = 16.0;  // 60fps相当を超えるread_videoを調査用に目印化する
 {$ELSE}
-  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成や計測を含めない
-  CLEAR_DECODE_TRACE_ON_OPEN = False; // Releaseではログクリアもしない
+  DECODE_TRACE_ENABLED        = False; // Releaseではログ文字列生成や計測を含めない
+  CLEAR_DECODE_TRACE_ON_OPEN  = False; // Releaseではログクリアもしない
 {$ENDIF}
 
 type
   PFileContext = ^TFileContext;
   // AviUtl2の入力ハンドルとして保持するファイル単位の状態。
   TFileContext = record
-    Decoder: TFFmpegDecoder; // 映像読み取り用のFFmpegデコーダ
-    FileName: string; // 開いている入力ファイル名
-    HasVideo: Boolean; // 映像ストリームをAviUtl2へ返せるか
-    Width: Integer; // 映像の幅
-    Height: Integer; // 映像の高さ
-    DurationSec: Double; // 入力ファイルの長さ
-    Rate: Integer; // AviUtl2へ返すフレームレート分子
-    Scale: Integer; // AviUtl2へ返すフレームレート分母
-    FrameCount: Integer; // AviUtl2へ返す総フレーム数
-    VideoInfo: TVideoInfo; // open時に取得した動画情報
-    Info: BITMAPINFOHEADER; // AviUtl2へ返す映像フォーマット
-    AudioInput: TPluginAudioInputReader; // 音声読み取り用の入力リーダー
-    LastDecodedFrame: Integer; // キャッシュしている直近のフレーム番号
-    CachedFrame: TBytes; // 直近フレームのBGRx32キャッシュ
-    LastError: string; // 直近のデコード/音声openエラー
+    Decoder           : TFFmpegDecoder;          // 映像読み取り用のFFmpegデコーダ
+    FileName          : string;                  // 開いている入力ファイル名
+    HasVideo          : Boolean;                 // 映像ストリームをAviUtl2へ返せるか
+    Width             : Integer;                 // 映像の幅
+    Height            : Integer;                 // 映像の高さ
+    DurationSec       : Double;                  // 入力ファイルの長さ
+    Rate              : Integer;                 // AviUtl2へ返すフレームレート分子
+    Scale             : Integer;                 // AviUtl2へ返すフレームレート分母
+    FrameCount        : Integer;                 // AviUtl2へ返す総フレーム数
+    VideoInfo         : TVideoInfo;              // open時に取得した動画情報
+    VideoOutputFormat : Integer;                 // ファイルごとに選択したAviUtl2向け映像形式
+    Info              : BITMAPINFOHEADER;        // AviUtl2へ返す映像フォーマット
+    AudioInput        : TPluginAudioInputReader; // 音声読み取り用の入力リーダー
+    LastDecodedFrame  : Integer;                 // キャッシュしている直近のフレーム番号
+    CachedFrame       : TBytes;                  // 直近フレームのBGRx32キャッシュ
+    LastError         : string;                  // 直近のデコード/音声openエラー
 {$IFDEF DEBUG}
-    LastReadVideoRequestTick: Int64; // 前回read_video要求時刻
-    LastReadVideoRequestFrame: Integer; // 前回read_video要求フレーム
-    ReadVideoCallCount: Int64; // read_video実行回数
-    SlowReadVideoCount: Int64; // 調査しきい値を超えたread_video回数
-    ReadVideoTotalMs: Double; // read_video合計時間
-    ReadVideoMaxMs: Double; // read_video最大時間
+    LastReadVideoRequestTick  : Int64;   // 前回read_video要求時刻
+    LastReadVideoRequestFrame : Integer; // 前回read_video要求フレーム
+    ReadVideoCallCount        : Int64;   // read_video実行回数
+    SlowReadVideoCount        : Int64;   // 調査しきい値を超えたread_video回数
+    ReadVideoTotalMs          : Double;  // read_video合計時間
+    ReadVideoMaxMs            : Double;  // read_video最大時間
 {$ENDIF}
   end;
 
   TSharedFrameCacheEntry = record
-    FileName: string; // キャッシュ元ファイル名
-    Frame: Integer; // キャッシュしたフレーム番号
-    ImageSize: Integer; // キャッシュした映像バッファサイズ
-    Data: TBytes; // AviUtl2へ返した映像データ
-    LastUsed: UInt64; // LRU判定用の利用順カウンタ
+    FileName  : string;  // キャッシュ元ファイル名
+    Frame     : Integer; // キャッシュしたフレーム番号
+    ImageSize : Integer; // キャッシュした映像バッファサイズ
+    Data      : TBytes;  // AviUtl2へ返した映像データ
+    LastUsed  : UInt64;  // LRU判定用の利用順カウンタ
   end;
 
 var
-  SharedFrameCache: array[0..SHARED_FRAME_CACHE_CAPACITY - 1] of TSharedFrameCacheEntry; // 複数open間で再利用する映像フレームキャッシュ
-  SharedFrameCacheClock: UInt64; // 共有キャッシュのLRU順序カウンタ
-  SharedFrameCacheLock: TCriticalSection; // 共有キャッシュ保護用ロック
-  ReusableDecoder: TFFmpegDecoder; // close直後に次openへ引き渡すデコーダ
-  ReusableDecoderFileName: string; // 再利用デコーダが開いているファイル名
-  ReusableDecoderInfo: TVideoInfo; // 再利用デコーダの動画情報
-  ReusableDecoderLastFrame: Integer; // 再利用デコーダの最後に読んだフレーム
+  SharedFrameCache        : array[0..SHARED_FRAME_CACHE_CAPACITY - 1] of TSharedFrameCacheEntry;
+  // 複数open間で共有するframe cache
+  SharedFrameCacheClock   : UInt64;           // 共有キャッシュのLRU順序カウンタ
+  SharedFrameCacheLock    : TCriticalSection; // 共有キャッシュ保護用ロック
+  ReusableDecoder         : TFFmpegDecoder;   // close直後に次openへ引き渡すデコーダ
+  ReusableDecoderFileName : string;           // 再利用デコーダが開いているファイル名
+  ReusableDecoderInfo     : TVideoInfo;       // 再利用デコーダの動画情報
+  ReusableDecoderLastFrame : Integer;          // 再利用デコーダの最後に読んだフレーム
 {$IFDEF DEBUG}
-  DecodeTraceLogCleared: Boolean; // Debugログをプロセス中に一度だけ初期化したか
+  DecodeTraceLogCleared   : Boolean;          // Debugログをプロセス中に一度だけ初期化したか
 {$ENDIF}
 
 // デコードログの出力先ファイル名を返す。
@@ -175,7 +178,9 @@ begin
   end;
 end;
 
-function TryReadSharedFrameCache(const FileName: string; Frame, ImageSize: Integer; Buffer: Pointer): Boolean;
+// 複数open間で共有するフレームキャッシュから指定フレームを取り出す。
+function TryReadSharedFrameCache(const FileName: string; Frame, ImageSize: Integer;
+  Buffer: Pointer): Boolean;
 var
   I: Integer;
 begin
@@ -202,7 +207,9 @@ begin
   end;
 end;
 
-procedure SaveSharedFrameCache(const FileName: string; Frame, ImageSize: Integer; Buffer: Pointer);
+// AviUtl2へ返したフレームを共有キャッシュへ保存する。
+procedure SaveSharedFrameCache(const FileName: string; Frame, ImageSize: Integer;
+  Buffer: Pointer);
 var
   I: Integer;
   Slot: Integer;
@@ -245,6 +252,7 @@ begin
   end;
 end;
 
+// 同じファイルを直後に開く場合に備えて保持したdecoderを取り出す。
 function TryTakeReusableDecoder(const FileName: string; out Decoder: TFFmpegDecoder; out VideoInfo: TVideoInfo;
   out LastFrame: Integer): Boolean;
 begin
@@ -272,6 +280,7 @@ begin
   end;
 end;
 
+// close直後の再openへ渡せるようdecoderを一時保持する。
 procedure SaveReusableDecoder(var Decoder: TFFmpegDecoder; const FileName: string; const VideoInfo: TVideoInfo;
   LastFrame: Integer);
 var
@@ -348,9 +357,9 @@ begin
 end;
 
 // 現在の映像出力形式に応じた1ピクセルあたりのバイト数を返す。
-function VideoBytesPerPixel: Integer;
+function VideoBytesPerPixel(OutputFormat: Integer): Integer;
 begin
-  case VIDEO_OUTPUT_FORMAT of
+  case OutputFormat of
     VIDEO_OUTPUT_BGR24:
       Result := 3;
     VIDEO_OUTPUT_YUY2:
@@ -359,6 +368,8 @@ begin
       Result := 1;
     VIDEO_OUTPUT_YC48:
       Result := 6;
+    VIDEO_OUTPUT_RGBA32:
+      Result := 4;
   else
     Result := 4;
   end;
@@ -367,11 +378,12 @@ end;
 // AviUtl2へ返す1ラインあたりのバイト数を返す。
 function VideoStride(const Ctx: PFileContext): Integer;
 begin
-  Result := Ctx^.Width * VideoBytesPerPixel;
-  if VIDEO_OUTPUT_FORMAT = VIDEO_OUTPUT_BGR24 then
+  Result := Ctx^.Width * VideoBytesPerPixel(Ctx^.VideoOutputFormat);
+  if Ctx^.VideoOutputFormat = VIDEO_OUTPUT_BGR24 then
     Result := ((Result + 3) div 4) * 4;
 end;
 
+// I420のY/UV planeを合わせた1フレーム分のバイト数を返す。
 function I420ImageSize(Width, Height: Integer): Integer;
 var
   ChromaWidth: Integer;
@@ -385,7 +397,7 @@ end;
 // AviUtl2へ返す1フレームあたりのバイト数を返す。
 function VideoImageSize(const Ctx: PFileContext): Integer;
 begin
-  case VIDEO_OUTPUT_FORMAT of
+  case Ctx^.VideoOutputFormat of
     VIDEO_OUTPUT_I420:
       Result := I420ImageSize(Ctx^.Width, Ctx^.Height);
   else
@@ -393,6 +405,7 @@ begin
   end;
 end;
 
+// AviUtl2から渡されたファイルを開き、入力ハンドルを返す。
 function PluginInputOpen(fileName: LPCWSTR): INPUT_HANDLE;
 var
   Ctx: PFileContext;
@@ -447,6 +460,10 @@ begin
     begin
       Ctx^.HasVideo := (VideoInfo.Width > 0) and (VideoInfo.Height > 0);
       Ctx^.VideoInfo := VideoInfo;
+      if VideoInfo.HasAlpha then
+        Ctx^.VideoOutputFormat := VIDEO_OUTPUT_RGBA32
+      else
+        Ctx^.VideoOutputFormat := VIDEO_OUTPUT_FORMAT;
       Ctx^.Width := VideoInfo.Width;
       Ctx^.Height := VideoInfo.Height;
       Ctx^.DurationSec := VideoInfo.DurationSec;
@@ -463,7 +480,7 @@ begin
         Ctx^.Info.biWidth := Ctx^.Width;
         Ctx^.Info.biHeight := Ctx^.Height;
         Ctx^.Info.biPlanes := 1;
-        case VIDEO_OUTPUT_FORMAT of
+        case Ctx^.VideoOutputFormat of
           VIDEO_OUTPUT_BGR24:
           begin
             Ctx^.Info.biBitCount := 24;
@@ -483,6 +500,11 @@ begin
           begin
             Ctx^.Info.biBitCount := 48;
             Ctx^.Info.biCompression := BI_YC48;
+          end;
+          VIDEO_OUTPUT_RGBA32:
+          begin
+            Ctx^.Info.biBitCount := 32;
+            Ctx^.Info.biCompression := BI_RGB;
           end;
         else
         begin
@@ -508,10 +530,13 @@ begin
 
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
-        DecodeTrace(Format('open ok file="%s" reused=%s last=%d width=%d height=%d duration=%.3f fps=%.6f frames=%d audio=%s audio_err=%s',
+        DecodeTrace(Format('open ok file="%s" reused=%s last=%d width=%d ' +
+          'height=%d duration=%.3f fps=%.6f frames=%d pix_fmt="%s" ' +
+          'alpha=%s output_format=%d audio=%s audio_err=%s',
           [Ctx^.FileName, BoolToStr(ReusedDecoder, True), Ctx^.LastDecodedFrame,
            Ctx^.Width, Ctx^.Height, Ctx^.DurationSec, VideoInfo.Fps,
-           Ctx^.FrameCount, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage]));
+           Ctx^.FrameCount, VideoInfo.PixelFormatName, BoolToStr(VideoInfo.HasAlpha, True),
+           Ctx^.VideoOutputFormat, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage]));
 {$ENDIF}
 
       Result := Ctx;
@@ -524,6 +549,7 @@ begin
   FreeFileContext(Ctx);
 end;
 
+// 入力ハンドルに紐づくデコーダとキャッシュを閉じる。
 function PluginInputClose(ih: INPUT_HANDLE): BOOL;
 {$IFDEF DEBUG}
 var
@@ -540,7 +566,11 @@ begin
   if DECODE_TRACE_ENABLED and (Ctx^.Decoder <> nil) then
   begin
     Stats := Ctx^.Decoder.DecodeStats;
-    DecodeTrace(Format('close_summary file="%s" read_video_calls=%d read_video_slow=%d read_video_avg_ms=%.3f read_video_max_ms=%.3f decoder_video_frames=%d decoder_avg_ms=%.3f decoder_max_ms=%.3f decode_avg_ms=%.3f decode_max_ms=%.3f transfer_avg_ms=%.3f transfer_max_ms=%.3f convert_avg_ms=%.3f convert_max_ms=%.3f',
+    DecodeTrace(Format('close_summary file="%s" read_video_calls=%d ' +
+      'read_video_slow=%d read_video_avg_ms=%.3f read_video_max_ms=%.3f ' +
+      'decoder_video_frames=%d decoder_avg_ms=%.3f decoder_max_ms=%.3f ' +
+      'decode_avg_ms=%.3f decode_max_ms=%.3f transfer_avg_ms=%.3f ' +
+      'transfer_max_ms=%.3f convert_avg_ms=%.3f convert_max_ms=%.3f',
       [Ctx^.FileName, Ctx^.ReadVideoCallCount, Ctx^.SlowReadVideoCount,
        IfThen(Ctx^.ReadVideoCallCount > 0, Ctx^.ReadVideoTotalMs / Ctx^.ReadVideoCallCount, 0.0),
        Ctx^.ReadVideoMaxMs, Stats.VideoFrames, Stats.VideoAverageMs, Stats.VideoMaxMs,
@@ -554,6 +584,7 @@ begin
   Result := True;
 end;
 
+// AviUtl2へ動画/音声の入力情報を返す。
 function PluginInputGetInfo(ih: INPUT_HANDLE; info: PInputInfo): BOOL;
 var
   Ctx: PFileContext;
@@ -585,6 +616,7 @@ begin
   Result := info^.flag <> 0;
 end;
 
+// 指定フレームの映像をAviUtl2のバッファへ読み込む。
 function PluginInputReadVideo(ih: INPUT_HANDLE; frame: Integer; buf: Pointer): Integer;
 var
   Ctx: PFileContext;
@@ -625,7 +657,8 @@ begin
       RequestIntervalMs := StopwatchTicksToMs(RequestTick - Ctx^.LastReadVideoRequestTick)
     else
       RequestIntervalMs := -1;
-    DecodeTrace(Format('read_video_request file="%s" frame=%d prev_request_frame=%d request_gap=%d interval_ms=%.3f last_decoded=%d',
+    DecodeTrace(Format('read_video_request file="%s" frame=%d ' +
+      'prev_request_frame=%d request_gap=%d interval_ms=%.3f last_decoded=%d',
       [Ctx^.FileName, frame, Ctx^.LastReadVideoRequestFrame,
        frame - Ctx^.LastReadVideoRequestFrame, RequestIntervalMs, Ctx^.LastDecodedFrame]));
     Ctx^.LastReadVideoRequestTick := RequestTick;
@@ -668,7 +701,7 @@ begin
     Decoded := True;
     for ForwardFrame := Ctx^.LastDecodedFrame + 1 to frame do
     begin
-      case VIDEO_OUTPUT_FORMAT of
+      case Ctx^.VideoOutputFormat of
         VIDEO_OUTPUT_BGR24:
           Decoded := Ctx^.Decoder.DecodeNextFrameToBgr24Optional(buf, VideoStride(Ctx),
             ForwardFrame = frame, PositionMsOut, ErrorMessage);
@@ -680,6 +713,9 @@ begin
             ForwardFrame = frame, PositionMsOut, ErrorMessage);
         VIDEO_OUTPUT_YC48:
           Decoded := Ctx^.Decoder.DecodeNextFrameToYc48Optional(buf, VideoStride(Ctx),
+            ForwardFrame = frame, PositionMsOut, ErrorMessage);
+        VIDEO_OUTPUT_RGBA32:
+          Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32Optional(buf, VideoStride(Ctx),
             ForwardFrame = frame, PositionMsOut, ErrorMessage);
       else
         Decoded := Ctx^.Decoder.DecodeNextFrameToBgrx32Optional(buf, VideoStride(Ctx),
@@ -697,7 +733,7 @@ begin
   begin
     DecodeRoute := 'seek';
     PositionMs := Round(frame * Ctx^.Scale * 1000.0 / Ctx^.Rate);
-    case VIDEO_OUTPUT_FORMAT of
+    case Ctx^.VideoOutputFormat of
       VIDEO_OUTPUT_BGR24:
         Decoded := Ctx^.Decoder.DecodeFrameToBgr24(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
       VIDEO_OUTPUT_YUY2:
@@ -706,6 +742,8 @@ begin
         Decoded := Ctx^.Decoder.DecodeFrameToI420(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
       VIDEO_OUTPUT_YC48:
         Decoded := Ctx^.Decoder.DecodeFrameToYc48(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
+      VIDEO_OUTPUT_RGBA32:
+        Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
     else
       Decoded := Ctx^.Decoder.DecodeFrameToBgrx32(PositionMs, buf, VideoStride(Ctx), ErrorMessage);
     end;
@@ -731,11 +769,15 @@ begin
       ((ExpectedFrameMs > 0) and (ReadElapsedMs >= ExpectedFrameMs));
     if IsSlowRead then
       Inc(Ctx^.SlowReadVideoCount);
-    DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=%s ok=%s elapsed_ms=%.3f image_size=%d pos_ms=%d err=%s',
-      [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute, BoolToStr(Decoded, True),
+    DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d ' +
+      'route=%s ok=%s elapsed_ms=%.3f image_size=%d pos_ms=%d err=%s',
+      [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute,
+       BoolToStr(Decoded, True),
        ReadElapsedMs, ImageSize, PositionMs, ErrorMessage]));
     if IsSlowRead then
-      DecodeTrace(Format('read_video_slow file="%s" frame=%d last=%d gap=%d route=%s elapsed_ms=%.3f frame_budget_ms=%.3f threshold_ms=%.3f pos_ms=%d ok=%s err=%s',
+      DecodeTrace(Format('read_video_slow file="%s" frame=%d last=%d gap=%d ' +
+        'route=%s elapsed_ms=%.3f frame_budget_ms=%.3f threshold_ms=%.3f ' +
+        'pos_ms=%d ok=%s err=%s',
         [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, FrameGap, DecodeRoute,
          ReadElapsedMs, ExpectedFrameMs, READ_VIDEO_SLOW_MS, PositionMs,
          BoolToStr(Decoded, True), ErrorMessage]));
@@ -757,6 +799,7 @@ begin
   Result := ImageSize;
 end;
 
+// 指定範囲の音声サンプルをAviUtl2のバッファへ読み込む。
 function PluginInputReadAudio(ih: INPUT_HANDLE; start, sampleLength: Integer; buf: Pointer): Integer;
 var
   Ctx: PFileContext;
@@ -772,6 +815,7 @@ begin
   Result := Ctx^.AudioInput.ReadAudio(start, sampleLength, buf);
 end;
 
+// 入力プラグインの設定ダイアログを表示する。
 function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 begin
   Result := ShowPluginSettingsDialog(hwnd, hinst);

@@ -1,5 +1,8 @@
 ﻿unit FFmpegDecoderSeekBgrx32;
 
+// 指定位置へseekし、映像フレームをBGRx32バッファへ直接変換する。
+// QSV利用時は必要に応じてHW frameをCPUへ転送してから変換する。
+
 interface
 
 uses
@@ -21,11 +24,12 @@ uses
 
 const
 {$IFDEF DEBUG}
-  DECODE_TRACE_ENABLED = True;
+  DECODE_TRACE_ENABLED = True;  // Debug時だけデコードログを出す
 {$ELSE}
-  DECODE_TRACE_ENABLED = False;
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成を避ける
 {$ENDIF}
 
+// Debug時のデコードログをTEMPへ追記する。
 procedure DecodeTrace(const Msg: string);
 var
   F: TextFile;
@@ -216,10 +220,16 @@ begin
 {$ENDIF}
 {$IFDEF DEBUG}
             if DECODE_TRACE_ENABLED then
-              DecodeTrace(Format('seek_decode file="%s" decoder="%s" qsv=%s pos_ms=%d target_ts=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
-                [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True), PositionMs, TargetTs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+              DecodeTrace(Format(
+                'seek_decode file="%s" decoder="%s" qsv=%s pos_ms=%d ' +
+                'target_ts=%d frame_pts=%d read_packets=%d video_packets=%d ' +
+                'decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f ' +
+                'decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+                [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True),
+                 PositionMs, TargetTs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
                  Context.DirectSwsSrcFormat, Context.DirectSwsDstFormat,
-                 TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs]));
+                 TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs,
+                 TransferElapsedMs, ConvertElapsedMs]));
 {$ENDIF}
             Result := True;
             Exit;
@@ -236,7 +246,9 @@ begin
 {$ENDIF}
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
-      DecodeTrace(Format('seek_decode_failed file="%s" pos_ms=%d target_ts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
+      DecodeTrace(Format(
+        'seek_decode_failed file="%s" pos_ms=%d target_ts=%d read_packets=%d ' +
+        'video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
         [Context.FileName, PositionMs, TargetTs, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
          TotalStopwatch.Elapsed.TotalMilliseconds]));
 {$ENDIF}

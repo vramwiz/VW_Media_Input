@@ -18,15 +18,15 @@ uses
   System.IniFiles, System.SysUtils;
 
 const
-  PLUGIN_DISPLAY_NAME = '動画IN';
-  SETTINGS_SECTION = 'VW_Media_Input';
-  SETTINGS_DECODER_MODE = 'VideoDecoderMode';
+  PLUGIN_DISPLAY_NAME   = '動画IN';           // 設定ダイアログに表示するプラグイン名
+  SETTINGS_SECTION      = 'VW_Media_Input';   // iniファイル内の設定セクション名
+  SETTINGS_DECODER_MODE = 'VideoDecoderMode'; // 映像デコード方式を保存するキー名
 
-  IDC_MODE_AUTO = 1001;
-  IDC_MODE_QSV = 1002;
-  IDC_MODE_SOFTWARE = 1003;
-  IDC_BUTTON_OK = IDOK;
-  IDC_BUTTON_CANCEL = IDCANCEL;
+  IDC_MODE_AUTO     = 1001;     // 自動選択radio buttonのcontrol ID
+  IDC_MODE_QSV      = 1002;     // QSV固定radio buttonのcontrol ID
+  IDC_MODE_SOFTWARE = 1003;     // software decoder radio buttonのcontrol ID
+  IDC_BUTTON_OK     = IDOK;     // OK buttonのcontrol ID
+  IDC_BUTTON_CANCEL = IDCANCEL; // cancel buttonのcontrol ID
 
 var
   CurrentVideoDecoderMode: TVideoDecoderMode = vdmAuto;

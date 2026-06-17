@@ -1,5 +1,8 @@
 ﻿unit FFmpegDecoderNextBgrx32;
 
+// 現在位置から次の映像フレームを読み、必要に応じてBGRx32へ直接変換する。
+// TFFmpegDecoderContextを受け取り、デコーダ本体から切り出した順方向decode処理を担当する。
+
 interface
 
 uses
@@ -22,11 +25,12 @@ uses
 
 const
 {$IFDEF DEBUG}
-  DECODE_TRACE_ENABLED = True;
+  DECODE_TRACE_ENABLED = True;  // Debug時だけデコードログを出す
 {$ELSE}
-  DECODE_TRACE_ENABLED = False;
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成を避ける
 {$ENDIF}
 
+// Debug時のデコードログをTEMPへ追記する。
 procedure DecodeTrace(const Msg: string);
 var
   F: TextFile;
@@ -132,7 +136,11 @@ var
     PositionMs := StreamTimestampToMs(Stream, Frame.pts);
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
-      DecodeTrace(Format('next_decode file="%s" decoder="%s" qsv=%s convert=%s source=%s pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+      DecodeTrace(Format(
+        'next_decode file="%s" decoder="%s" qsv=%s convert=%s source=%s ' +
+        'pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d ' +
+        'decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f ' +
+        'decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
         [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True),
          BoolToStr(ConvertFrame, True), SourceName, PositionMs, Frame.pts,
          ReadPacketCount, VideoPacketCount, DecodedFrameCount,
@@ -266,7 +274,9 @@ begin
 {$ENDIF}
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
-      DecodeTrace(Format('next_decode_failed file="%s" convert=%s read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
+      DecodeTrace(Format(
+        'next_decode_failed file="%s" convert=%s read_packets=%d ' +
+        'video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
         [Context.FileName, BoolToStr(ConvertFrame, True), ReadPacketCount, VideoPacketCount, DecodedFrameCount,
          TotalStopwatch.Elapsed.TotalMilliseconds]));
 {$ENDIF}

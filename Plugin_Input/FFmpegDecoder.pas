@@ -62,41 +62,58 @@ type
     // 動画を開いてデコード可能な状態にする
     function Open(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
     // 指定ミリ秒位置へシークしてフレームをBitmapへ変換する
-    function DecodeFrameToBitmap(PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean; overload;
+    function DecodeFrameToBitmap(PositionMs: Integer; Bitmap: TBitmap;
+      out ErrorMessage: string): Boolean; overload;
     // 指定ミリ秒位置へシークしてフレームを32bit BGRxバッファへ直接変換する
-    function DecodeFrameToBgrx32(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+    function DecodeFrameToBgrx32(PositionMs: Integer; Buffer: Pointer;
+      BufferStride: Integer; out ErrorMessage: string): Boolean;
     // 指定ミリ秒位置へシークしてフレームを24bit BGRバッファへ直接変換する
-    function DecodeFrameToBgr24(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+    function DecodeFrameToBgr24(PositionMs: Integer; Buffer: Pointer;
+      BufferStride: Integer; out ErrorMessage: string): Boolean;
     // 指定ミリ秒位置へシークしてフレームをYUY2バッファへ直接変換する
-    function DecodeFrameToYuy2(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+    function DecodeFrameToYuy2(PositionMs: Integer; Buffer: Pointer;
+      BufferStride: Integer; out ErrorMessage: string): Boolean;
     // 指定ミリ秒位置へシークしてフレームをI420バッファへ直接変換する
-    function DecodeFrameToI420(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+    function DecodeFrameToI420(PositionMs: Integer; Buffer: Pointer;
+      BufferStride: Integer; out ErrorMessage: string): Boolean;
     // 指定ミリ秒位置へシークしてフレームをYC48バッファへ直接変換する
-    function DecodeFrameToYc48(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+    function DecodeFrameToYc48(PositionMs: Integer; Buffer: Pointer;
+      BufferStride: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードする
-    function DecodeNextFrameToBitmap(Bitmap: TBitmap; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    function DecodeNextFrameToBitmap(Bitmap: TBitmap; out PositionMs: Integer;
+      out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
-    function DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    function DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer;
+      out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードし、必要な場合だけ32bit BGRxバッファへ変換する
-    function DecodeNextFrameToBgrx32Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    function DecodeNextFrameToBgrx32Optional(Buffer: Pointer; BufferStride: Integer;
+      ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードし、必要な場合だけ24bit BGRバッファへ変換する
-    function DecodeNextFrameToBgr24Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    function DecodeNextFrameToBgr24Optional(Buffer: Pointer; BufferStride: Integer;
+      ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードし、必要な場合だけYUY2バッファへ変換する
-    function DecodeNextFrameToYuy2Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    function DecodeNextFrameToYuy2Optional(Buffer: Pointer; BufferStride: Integer;
+      ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードし、必要な場合だけI420バッファへ変換する
-    function DecodeNextFrameToI420Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    function DecodeNextFrameToI420Optional(Buffer: Pointer; BufferStride: Integer;
+      ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 現在位置から次の映像フレームを順方向デコードし、必要な場合だけYC48バッファへ変換する
-    function DecodeNextFrameToYc48Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+    function DecodeNextFrameToYc48Optional(Buffer: Pointer; BufferStride: Integer;
+      ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
     // 開いているファイルの音声を指定サンプル数までPCM16 stereo 48kHzへ順次デコードする
-    function DecodeAudioPcm16Stereo48kUntil(TargetSampleCount: Integer; var Pcm: TBytes; var SampleCount: Integer; out Finished: Boolean; out ErrorMessage: string): Boolean;
+    function DecodeAudioPcm16Stereo48kUntil(TargetSampleCount: Integer;
+      var Pcm: TBytes; var SampleCount: Integer; out Finished: Boolean;
+      out ErrorMessage: string): Boolean;
     // デバッグ用の音声再生を開始する
     function StartAudioPlayback(out ErrorMessage: string): Boolean;
     // デバッグ用の音声再生を停止する
     procedure StopAudioPlayback;
     // 一時デコーダで動画情報だけを読む
-    class function ReadVideoInfo(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean; static;
+    class function ReadVideoInfo(const FileName: string; out Info: TVideoInfo;
+      out ErrorMessage: string): Boolean; static;
     // 一時デコーダで指定位置のフレームだけを読む
-    class function DecodeFrameToBitmap(const FileName: string; PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean; overload; static;
+    class function DecodeFrameToBitmap(const FileName: string; PositionMs: Integer;
+      Bitmap: TBitmap; out ErrorMessage: string): Boolean; overload; static;
     property Info: TVideoInfo read FInfo;
     property AudioStats: TAudioPlaybackStats read FAudioStats;
     property DecodeStats: TDecodeLoadStats read FDecodeStats;
@@ -115,11 +132,28 @@ uses
 
 const
 {$IFDEF DEBUG}
-  DECODE_TRACE_ENABLED = True;
+  DECODE_TRACE_ENABLED = True;  // Debug時だけデコードログを出す
 {$ELSE}
-  DECODE_TRACE_ENABLED = False;
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成を避ける
 {$ENDIF}
 
+// pixel format名から透過情報を持つ形式か判定する。
+function PixelFormatHasAlpha(const PixelFormatText: string): Boolean;
+var
+  LowerName: string;
+begin
+  LowerName := LowerCase(PixelFormatText);
+  Result :=
+    (Pos('yuva', LowerName) = 1) or
+    (Pos('rgba', LowerName) = 1) or
+    (Pos('bgra', LowerName) = 1) or
+    (Pos('argb', LowerName) = 1) or
+    (Pos('abgr', LowerName) = 1) or
+    (Pos('gbrap', LowerName) = 1) or
+    (Pos('ya', LowerName) = 1);
+end;
+
+// Debug時のデコードログをTEMPへ追記する。
 procedure DecodeTrace(const Msg: string);
 var
   F: TextFile;
@@ -269,7 +303,8 @@ begin
 end;
 
 // 動画を開いてデコード可能な状態にする
-function TFFmpegDecoder.Open(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.Open(const FileName: string; out Info: TVideoInfo;
+  out ErrorMessage: string): Boolean;
 var
   FormatContext     : PAVFormatContext;    // avformatで開く入力コンテキスト
   CodecContext      : PAVCodecContext;     // 映像デコードコンテキスト
@@ -289,14 +324,14 @@ var
   AudioStream       : PAVStream;           // 対象の音声ストリーム
   CodecPar          : PAVCodecParameters;  // 映像ストリームのコーデック情報
   HasVideoStream    : Boolean;             // 映像ストリームがあるかどうか
-  QsvDeviceContext  : PAVBufferRef;
-  QsvDecoderName    : AnsiString;
-  QsvErrorMessage   : string;
-  OpenedWithQsv     : Boolean;
-  VideoDecoderName  : string;
-  DecoderMode       : TVideoDecoderMode;
-  DecodeBackend     : string;
-  GpuInferred       : string;
+  QsvDeviceContext  : PAVBufferRef;       // QSV device context
+  QsvDecoderName    : AnsiString;         // codec idから推定したQSV decoder名
+  QsvErrorMessage   : string;             // QSV初期化失敗時の理由
+  OpenedWithQsv     : Boolean;            // QSV decoderで開けたかどうか
+  VideoDecoderName  : string;             // 実際に使う映像デコーダ名
+  DecoderMode       : TVideoDecoderMode;  // 設定で選択された映像デコード方式
+  DecodeBackend     : string;             // ログ用のbackend名
+  GpuInferred       : string;             // ログ用の推定GPU名
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
@@ -381,7 +416,10 @@ begin
         begin
           if not Assigned(Codec) then
             QsvErrorMessage := 'QSV decoder was not found.';
-          DecodeTrace(Format('qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False decoder="%s" reason="%s"',
+          DecodeTrace(Format(
+            'qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv ' +
+            'attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False ' +
+            'decoder="%s" reason="%s"',
             [FileName, VideoDecoderModeToText(DecoderMode), string(QsvDecoderName), QsvErrorMessage]));
           if DecoderMode = vdmQsv then
           begin
@@ -426,7 +464,10 @@ begin
       begin
         if OpenedWithQsv then
         begin
-          DecodeTrace(Format('qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False decoder="%s" reason="%s"',
+          DecodeTrace(Format(
+            'qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv ' +
+            'attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False ' +
+            'decoder="%s" reason="%s"',
             [FileName, VideoDecoderModeToText(DecoderMode), VideoDecoderName, TFFmpegApi.ErrorText(Ret)]));
           if DecoderMode = vdmQsv then
           begin
@@ -493,14 +534,21 @@ begin
         GpuInferred := 'none';
       end;
 
-      DecodeTrace(Format('video_decoder file="%s" decode_mode=%s decode_backend=%s gpu_inferred="%s" nvidia_nvdec_supported=False decoder="%s" qsv=%s codec_id=%d',
-        [FileName, VideoDecoderModeToText(DecoderMode), DecodeBackend, GpuInferred,
-         VideoDecoderName, BoolToStr(OpenedWithQsv, True), CodecPar.codec_id]));
-
       Info.Width := CodecPar.width;
       Info.Height := CodecPar.height;
+      Info.PixelFormat := CodecPar.format;
+      Info.PixelFormatName := PixelFormatName(CodecPar.format);
+      Info.HasAlpha := PixelFormatHasAlpha(Info.PixelFormatName);
       Info.FpsText := RationalToText(Stream.avg_frame_rate);
       Info.Fps := RationalToDouble(Stream.avg_frame_rate);
+
+      DecodeTrace(Format(
+        'video_decoder file="%s" decode_mode=%s decode_backend=%s ' +
+        'gpu_inferred="%s" nvidia_nvdec_supported=False decoder="%s" ' +
+        'qsv=%s codec_id=%d pix_fmt="%s" alpha=%s',
+        [FileName, VideoDecoderModeToText(DecoderMode), DecodeBackend, GpuInferred,
+         VideoDecoderName, BoolToStr(OpenedWithQsv, True), CodecPar.codec_id,
+         Info.PixelFormatName, BoolToStr(Info.HasAlpha, True)]));
 
       if (Info.Width <= 0) or (Info.Height <= 0) then
       begin
@@ -514,7 +562,8 @@ begin
       Exit;
     end;
 
-    OpenAudioDecoder(FormatContext, Info, AudioCodecContext, AudioStream, AudioStreamIndex, AudioFrame, SwrContext);
+    OpenAudioDecoder(FormatContext, Info, AudioCodecContext, AudioStream,
+      AudioStreamIndex, AudioFrame, SwrContext);
     if (not HasVideoStream) and ((not Info.Audio.Present) or (Info.Audio.OpenError <> '')) then
     begin
       ErrorMessage := 'Audio decoder is not open. ' + Info.Audio.OpenError;
@@ -582,7 +631,8 @@ begin
 end;
 
 // 指定ミリ秒位置へシークしてフレームをBitmapへ変換する
-function TFFmpegDecoder.DecodeFrameToBitmap(PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeFrameToBitmap(PositionMs: Integer; Bitmap: TBitmap;
+  out ErrorMessage: string): Boolean;
 var
   FormatContext: PAVFormatContext; // 開いている入力コンテキスト
   CodecContext: PAVCodecContext; // 映像デコードコンテキスト
@@ -657,7 +707,8 @@ begin
 end;
 
 // 指定ミリ秒位置へシークしてフレームを32bit BGRxバッファへ直接変換する
-function TFFmpegDecoder.DecodeFrameToBgrx32(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeFrameToBgrx32(PositionMs: Integer; Buffer: Pointer;
+  BufferStride: Integer; out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderSeekBgrx32.DecodeFrameToBgrx32(
@@ -666,7 +717,8 @@ begin
 end;
 
 // 指定ミリ秒位置へシークしてフレームを24bit BGRバッファへ直接変換する
-function TFFmpegDecoder.DecodeFrameToBgr24(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeFrameToBgr24(PositionMs: Integer; Buffer: Pointer;
+  BufferStride: Integer; out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderSeekBgr24.DecodeFrameToBgr24(
@@ -675,7 +727,8 @@ begin
 end;
 
 // 指定ミリ秒位置へシークしてフレームをYUY2バッファへ直接変換する
-function TFFmpegDecoder.DecodeFrameToYuy2(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeFrameToYuy2(PositionMs: Integer; Buffer: Pointer;
+  BufferStride: Integer; out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderSeekYuy2.DecodeFrameToYuy2(
@@ -684,7 +737,8 @@ begin
 end;
 
 // 指定ミリ秒位置へシークしてフレームをI420バッファへ直接変換する
-function TFFmpegDecoder.DecodeFrameToI420(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeFrameToI420(PositionMs: Integer; Buffer: Pointer;
+  BufferStride: Integer; out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderSeekI420.DecodeFrameToI420(
@@ -693,7 +747,8 @@ begin
 end;
 
 // 指定ミリ秒位置へシークしてフレームをYC48バッファへ直接変換する
-function TFFmpegDecoder.DecodeFrameToYc48(PositionMs: Integer; Buffer: Pointer; BufferStride: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeFrameToYc48(PositionMs: Integer; Buffer: Pointer;
+  BufferStride: Integer; out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderSeekYc48.DecodeFrameToYc48(
@@ -702,7 +757,8 @@ begin
 end;
 
 // 現在位置から次の映像フレームを順方向デコードする
-function TFFmpegDecoder.DecodeNextFrameToBitmap(Bitmap: TBitmap; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeNextFrameToBitmap(Bitmap: TBitmap;
+  out PositionMs: Integer; out ErrorMessage: string): Boolean;
 var
   FormatContext: PAVFormatContext; // 開いている入力コンテキスト
   CodecContext: PAVCodecContext; // 映像デコードコンテキスト
@@ -769,12 +825,15 @@ begin
 end;
 
 // 現在位置から次の映像フレームを順方向デコードして32bit BGRxバッファへ直接変換する
-function TFFmpegDecoder.DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeNextFrameToBgrx32(Buffer: Pointer; BufferStride: Integer;
+  out PositionMs: Integer; out ErrorMessage: string): Boolean;
 begin
   Result := DecodeNextFrameToBgrx32Optional(Buffer, BufferStride, True, PositionMs, ErrorMessage);
 end;
 
-function TFFmpegDecoder.DecodeNextFrameToBgrx32Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeNextFrameToBgrx32Optional(Buffer: Pointer;
+  BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer;
+  out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderNextBgrx32.DecodeNextFrameToBgrx32Optional(
@@ -782,7 +841,9 @@ begin
   SyncFieldsFromContext;
 end;
 
-function TFFmpegDecoder.DecodeNextFrameToBgr24Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeNextFrameToBgr24Optional(Buffer: Pointer;
+  BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer;
+  out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderNextBgr24.DecodeNextFrameToBgr24Optional(
@@ -790,7 +851,9 @@ begin
   SyncFieldsFromContext;
 end;
 
-function TFFmpegDecoder.DecodeNextFrameToYuy2Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeNextFrameToYuy2Optional(Buffer: Pointer;
+  BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer;
+  out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderNextYuy2.DecodeNextFrameToYuy2Optional(
@@ -798,7 +861,9 @@ begin
   SyncFieldsFromContext;
 end;
 
-function TFFmpegDecoder.DecodeNextFrameToI420Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeNextFrameToI420Optional(Buffer: Pointer;
+  BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer;
+  out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderNextI420.DecodeNextFrameToI420Optional(
@@ -806,7 +871,9 @@ begin
   SyncFieldsFromContext;
 end;
 
-function TFFmpegDecoder.DecodeNextFrameToYc48Optional(Buffer: Pointer; BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeNextFrameToYc48Optional(Buffer: Pointer;
+  BufferStride: Integer; ConvertFrame: Boolean; out PositionMs: Integer;
+  out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderNextYc48.DecodeNextFrameToYc48Optional(
@@ -815,7 +882,9 @@ begin
 end;
 
 // 開いているファイルの音声を指定サンプル数までPCM16 stereo 48kHzへ順次デコードする
-function TFFmpegDecoder.DecodeAudioPcm16Stereo48kUntil(TargetSampleCount: Integer; var Pcm: TBytes; var SampleCount: Integer; out Finished: Boolean; out ErrorMessage: string): Boolean;
+function TFFmpegDecoder.DecodeAudioPcm16Stereo48kUntil(TargetSampleCount: Integer;
+  var Pcm: TBytes; var SampleCount: Integer; out Finished: Boolean;
+  out ErrorMessage: string): Boolean;
 begin
   SyncContextFromFields;
   Result := FFmpegDecoderAudioRead.DecodeAudioPcm16Stereo48kUntil(
@@ -829,7 +898,8 @@ begin
 end;
 
 // 一時デコーダで動画情報だけを読む
-class function TFFmpegDecoder.ReadVideoInfo(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
+class function TFFmpegDecoder.ReadVideoInfo(const FileName: string;
+  out Info: TVideoInfo; out ErrorMessage: string): Boolean;
 var
   Decoder: TFFmpegDecoder; // 情報取得だけに使う一時デコーダ
 begin
@@ -842,10 +912,11 @@ begin
 end;
 
 // 一時デコーダで指定位置のフレームだけを読む
-class function TFFmpegDecoder.DecodeFrameToBitmap(const FileName: string; PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean;
+class function TFFmpegDecoder.DecodeFrameToBitmap(const FileName: string;
+  PositionMs: Integer; Bitmap: TBitmap; out ErrorMessage: string): Boolean;
 var
   Decoder: TFFmpegDecoder; // フレーム取得だけに使う一時デコーダ
-  Info: TVideoInfo; // 一時デコーダで取得する動画情報
+  Info: TVideoInfo;       // 一時デコーダで取得する動画情報
 begin
   Decoder := TFFmpegDecoder.Create;
   try

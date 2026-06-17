@@ -152,18 +152,24 @@ type
     pts                 : Int64;                  // フレームの表示時刻
   end;
 
-  Tavformat_open_input = function(ps: PPAVFormatContext; url: PAnsiChar; fmt: Pointer; options: Pointer): Integer; cdecl;
+  Tavformat_open_input = function(ps: PPAVFormatContext; url: PAnsiChar;
+    fmt: Pointer; options: Pointer): Integer; cdecl;
   Tavformat_find_stream_info = function(ic: PAVFormatContext; options: Pointer): Integer; cdecl;
   Tavformat_close_input = procedure(ps: PPAVFormatContext); cdecl;
   Tavformat_network_init = function: Integer; cdecl;
-  Tav_find_best_stream = function(ic: PAVFormatContext; media_type: Integer; wanted_stream_nb: Integer; related_stream: Integer; decoder_ret: Pointer; flags: Integer): Integer; cdecl;
+  Tav_find_best_stream = function(ic: PAVFormatContext; media_type,
+    wanted_stream_nb, related_stream: Integer; decoder_ret: Pointer;
+    flags: Integer): Integer; cdecl;
   Tav_read_frame = function(s: PAVFormatContext; pkt: PAVPacket): Integer; cdecl;
-  Tav_seek_frame = function(s: PAVFormatContext; stream_index: Integer; timestamp: Int64; flags: Integer): Integer; cdecl;
+  Tav_seek_frame = function(s: PAVFormatContext; stream_index: Integer;
+    timestamp: Int64; flags: Integer): Integer; cdecl;
 
   Tavcodec_find_decoder = function(id: Integer): PAVCodec; cdecl;
-  Tavcodec_find_decoder_by_name = function(name: PAnsiChar): PAVCodec; cdecl; // 名前からデコーダを探す関数型
+  Tavcodec_find_decoder_by_name = function(name: PAnsiChar): PAVCodec; cdecl;
+  // 名前からデコーダを探す関数型
   Tavcodec_alloc_context3 = function(codec: PAVCodec): PAVCodecContext; cdecl;
-  Tavcodec_parameters_to_context = function(codecContext: PAVCodecContext; codecpar: PAVCodecParameters): Integer; cdecl;
+  Tavcodec_parameters_to_context = function(codecContext: PAVCodecContext;
+    codecpar: PAVCodecParameters): Integer; cdecl;
   Tavcodec_open2 = function(codecContext: PAVCodecContext; codec: PAVCodec; options: Pointer): Integer; cdecl;
   Tavcodec_free_context = procedure(codecContext: PPAVCodecContext); cdecl;
   Tavcodec_send_packet = function(codecContext: PAVCodecContext; packet: PAVPacket): Integer; cdecl;
@@ -178,89 +184,101 @@ type
   Tav_frame_unref = procedure(frame: PAVFrame); cdecl; // AVFrameの参照を解放する関数型
   Tav_strerror = function(errnum: Integer; errbuf: PAnsiChar; errbuf_size: NativeUInt): Integer; cdecl;
   Tav_get_sample_fmt_name = function(sample_fmt: Integer): PAnsiChar; cdecl;
-  Tav_hwdevice_ctx_create = function(device_ctx: PPAVBufferRef; dev_type: Integer; device: PAnsiChar; opts: Pointer; flags: Integer): Integer; cdecl; // HW device contextを作る関数型
-  Tav_hwframe_transfer_data = function(dst: PAVFrame; const src: PAVFrame; flags: Integer): Integer; cdecl; // HW frameをCPU側へ転送する関数型
-  Tav_buffer_unref = procedure(buf: PPAVBufferRef); cdecl; // AVBufferRefを解放する関数型
+  Tav_get_pix_fmt_name = function(pix_fmt: Integer): PAnsiChar; cdecl;
+  Tav_hwdevice_ctx_create = function(device_ctx: PPAVBufferRef;
+    dev_type: Integer; device: PAnsiChar; opts: Pointer; flags: Integer): Integer; cdecl;
+  // HW device contextを作る関数型
+  Tav_hwframe_transfer_data = function(dst: PAVFrame; const src: PAVFrame;
+    flags: Integer): Integer; cdecl;
+  // HW frameをCPU側へ転送する関数型
+  Tav_buffer_unref = procedure(buf: PPAVBufferRef); cdecl;
+  // AVBufferRefを解放する関数型
 
-  Tsws_getContext = function(srcW, srcH, srcFormat, dstW, dstH, dstFormat, flags: Integer; srcFilter, dstFilter, param: Pointer): PSwsContext; cdecl;
-  Tsws_scale = function(context: PSwsContext; srcSlice, srcStride: Pointer; srcSliceY, srcSliceH: Integer; dst, dstStride: Pointer): Integer; cdecl;
+  Tsws_getContext = function(srcW, srcH, srcFormat, dstW, dstH, dstFormat,
+    flags: Integer; srcFilter, dstFilter, param: Pointer): PSwsContext; cdecl;
+  Tsws_scale = function(context: PSwsContext; srcSlice, srcStride: Pointer;
+    srcSliceY, srcSliceH: Integer; dst, dstStride: Pointer): Integer; cdecl;
   Tsws_freeContext = procedure(context: PSwsContext); cdecl;
 
   Tav_channel_layout_default = procedure(ch_layout: PAVChannelLayout; nb_channels: Integer); cdecl;
   Tav_channel_layout_copy = function(dst: PAVChannelLayout; const src: PAVChannelLayout): Integer; cdecl;
   Tav_channel_layout_uninit = procedure(ch_layout: PAVChannelLayout); cdecl;
 
-  Tswr_alloc_set_opts2 = function(ps: PPSwrContext; const out_ch_layout: PAVChannelLayout; out_sample_fmt: Integer; out_sample_rate: Integer;
-    const in_ch_layout: PAVChannelLayout; in_sample_fmt: Integer; in_sample_rate: Integer; log_offset: Integer; log_ctx: Pointer): Integer; cdecl;
+  Tswr_alloc_set_opts2 = function(ps: PPSwrContext;
+    const out_ch_layout: PAVChannelLayout; out_sample_fmt, out_sample_rate: Integer;
+    const in_ch_layout: PAVChannelLayout; in_sample_fmt, in_sample_rate: Integer;
+    log_offset: Integer; log_ctx: Pointer): Integer; cdecl;
   Tswr_init = function(s: PSwrContext): Integer; cdecl;
-  Tswr_convert = function(s: PSwrContext; out_arg: Pointer; out_count: Integer; in_arg: Pointer; in_count: Integer): Integer; cdecl;
+  Tswr_convert = function(s: PSwrContext; out_arg: Pointer; out_count: Integer;
+    in_arg: Pointer; in_count: Integer): Integer; cdecl;
   Tswr_free = procedure(s: PPSwrContext); cdecl;
 
 const
-  AVMEDIA_TYPE_VIDEO = 0;
-  AVMEDIA_TYPE_AUDIO = 1;
-  AV_TIME_BASE = 1000000;
-  AVSEEK_FLAG_BACKWARD = 1;
-  AV_PIX_FMT_YUV420P = 0; // I420へ直接渡せるFFmpeg planar YUV420形式
-  AV_PIX_FMT_YUYV422 = 1; // YUY2へ渡すためのFFmpeg packed YUV422形式
-  AV_PIX_FMT_BGR24 = 3; // 24bit BGR形式
-  AV_PIX_FMT_NV12 = 23; // QSV decoderが返すことが多いNV12形式
-  AV_PIX_FMT_BGRA = 28; // 32bit BGRA形式
-  AV_PIX_FMT_QSV = 114; // QSV HW frame形式
-  AV_HWDEVICE_TYPE_QSV = 5; // QSV HW device種別
-  SWS_BILINEAR = 2;
-  AV_NOPTS_VALUE = -9223372036854775808;
-  AV_SAMPLE_FMT_S16 = 1;
-  AUDIO_OUTPUT_SAMPLE_RATE = 48000;
-  AUDIO_OUTPUT_CHANNELS = 2;
+  AVMEDIA_TYPE_VIDEO       = 0;                    // 映像ストリーム種別
+  AVMEDIA_TYPE_AUDIO       = 1;                    // 音声ストリーム種別
+  AV_TIME_BASE             = 1000000;              // FFmpegの標準時間単位
+  AVSEEK_FLAG_BACKWARD     = 1;                    // 目的位置以前のkey frameへseekする
+  AV_PIX_FMT_YUV420P       = 0;                    // I420へ直接渡せるplanar YUV420形式
+  AV_PIX_FMT_YUYV422       = 1;                    // YUY2へ渡すpacked YUV422形式
+  AV_PIX_FMT_BGR24         = 3;                    // 24bit BGR形式
+  AV_PIX_FMT_NV12          = 23;                   // QSV decoderが返すことが多いNV12形式
+  AV_PIX_FMT_BGRA          = 28;                   // 32bit BGRA形式
+  AV_PIX_FMT_QSV           = 114;                  // QSV HW frame形式
+  AV_HWDEVICE_TYPE_QSV     = 5;                    // QSV HW device種別
+  SWS_BILINEAR             = 2;                    // swscaleのbilinear変換指定
+  AV_NOPTS_VALUE           = -9223372036854775808; // PTS未設定値
+  AV_SAMPLE_FMT_S16        = 1;                    // signed 16bit PCM sample形式
+  AUDIO_OUTPUT_SAMPLE_RATE = 48000;                // 出力PCMサンプルレート
+  AUDIO_OUTPUT_CHANNELS    = 2;                    // 出力PCMチャンネル数
 
 type
   // FFmpeg DLLのロード状態と関数ポインタを保持するクラス。
   TFFmpegApi = class
   public
-    class var FLoaded     : Boolean;                                         // FFmpeg DLLロード済みフラグ
-    class var FAvUtil     : HMODULE;                                         // avutil DLLハンドル
-    class var FAvCodec    : HMODULE;                                         // avcodec DLLハンドル
-    class var FAvFormat   : HMODULE;                                         // avformat DLLハンドル
-    class var FSwResample : HMODULE;                                         // swresample DLLハンドル
-    class var FSwScale    : HMODULE;                                         // swscale DLLハンドル
-    class var avformat_open_input: Tavformat_open_input;                     // 入力ファイルを開く関数
-    class var avformat_find_stream_info: Tavformat_find_stream_info;         // ストリーム情報を読む関数
-    class var avformat_close_input: Tavformat_close_input;                   // 入力コンテキストを閉じる関数
-    class var avformat_network_init: Tavformat_network_init;                 // FFmpegネットワーク機能初期化関数
-    class var av_find_best_stream: Tav_find_best_stream;                     // 最適な映像ストリームを探す関数
-    class var av_read_frame: Tav_read_frame;                                 // 次のパケットを読む関数
-    class var av_seek_frame: Tav_seek_frame;                                 // 指定位置へシークする関数
-    class var avcodec_find_decoder: Tavcodec_find_decoder;                   // コーデックIDからデコーダを探す関数
-    class var avcodec_alloc_context3: Tavcodec_alloc_context3;               // デコードコンテキストを確保する関数
-    class var avcodec_parameters_to_context: Tavcodec_parameters_to_context; // ストリーム情報をデコードコンテキストへコピーする関数
-    class var avcodec_open2: Tavcodec_open2;                                 // デコーダを開く関数
-    class var avcodec_free_context: Tavcodec_free_context;                   // デコードコンテキストを解放する関数
-    class var avcodec_send_packet: Tavcodec_send_packet;                     // パケットをデコーダへ渡す関数
-    class var avcodec_receive_frame: Tavcodec_receive_frame;                 // デコード済みフレームを受け取る関数
-    class var avcodec_flush_buffers: Tavcodec_flush_buffers;                 // シーク後にデコーダ内部バッファを捨てる関数
-    class var av_packet_alloc: Tav_packet_alloc;                             // AVPacketを確保する関数
-    class var av_packet_free: Tav_packet_free;                               // AVPacketを解放する関数
-    class var av_packet_unref: Tav_packet_unref;                             // AVPacketの参照を解放する関数
-    class var av_frame_alloc: Tav_frame_alloc;                               // AVFrameを確保する関数
-    class var av_frame_free: Tav_frame_free;                                 // AVFrameを解放する関数
-    class var av_strerror: Tav_strerror;                                     // FFmpegエラーコードを文字列化する関数
-    class var av_get_sample_fmt_name: Tav_get_sample_fmt_name;               // サンプル形式名を取得する関数
-    class var av_channel_layout_default: Tav_channel_layout_default;         // 標準チャンネルレイアウトを作る関数
-    class var av_channel_layout_copy: Tav_channel_layout_copy;               // チャンネルレイアウトをコピーする関数
-    class var av_channel_layout_uninit: Tav_channel_layout_uninit;           // チャンネルレイアウトを解放する関数
-    class var sws_getContext: Tsws_getContext;                               // 色変換コンテキストを作る関数
-    class var sws_scale: Tsws_scale;                                         // フレームをBGRへ変換する関数
-    class var sws_freeContext: Tsws_freeContext;                             // 色変換コンテキストを解放する関数
-    class var avcodec_find_decoder_by_name: Tavcodec_find_decoder_by_name;   // 名前からデコーダを探す関数
-    class var av_frame_unref: Tav_frame_unref;                               // AVFrameの参照を解放する関数
-    class var av_hwdevice_ctx_create: Tav_hwdevice_ctx_create;               // HW device contextを作る関数
-    class var av_hwframe_transfer_data: Tav_hwframe_transfer_data;           // HW frameをCPU側へ転送する関数
-    class var av_buffer_unref: Tav_buffer_unref;                             // AVBufferRefを解放する関数
-    class var swr_alloc_set_opts2: Tswr_alloc_set_opts2;                     // 音声変換コンテキストを作る関数
-    class var swr_init: Tswr_init;                                           // 音声変換コンテキストを初期化する関数
-    class var swr_convert: Tswr_convert;                                     // 音声フレームをPCMへ変換する関数
-    class var swr_free: Tswr_free;                                           // 音声変換コンテキストを解放する関数
+    class var FLoaded                          : Boolean;                       // FFmpeg DLLロード済みフラグ
+    class var FAvUtil                          : HMODULE;                       // avutil DLLハンドル
+    class var FAvCodec                         : HMODULE;                       // avcodec DLLハンドル
+    class var FAvFormat                        : HMODULE;                       // avformat DLLハンドル
+    class var FSwResample                      : HMODULE;                       // swresample DLLハンドル
+    class var FSwScale                         : HMODULE;                       // swscale DLLハンドル
+    class var avformat_open_input              : Tavformat_open_input;          // 入力ファイルを開く関数
+    class var avformat_find_stream_info        : Tavformat_find_stream_info;    // ストリーム情報を読む関数
+    class var avformat_close_input             : Tavformat_close_input;         // 入力コンテキストを閉じる関数
+    class var avformat_network_init            : Tavformat_network_init;        // FFmpegネットワーク機能初期化関数
+    class var av_find_best_stream              : Tav_find_best_stream;          // 最適な映像ストリームを探す関数
+    class var av_read_frame                    : Tav_read_frame;                // 次のパケットを読む関数
+    class var av_seek_frame                    : Tav_seek_frame;                // 指定位置へシークする関数
+    class var avcodec_find_decoder             : Tavcodec_find_decoder;         // コーデックIDからデコーダを探す関数
+    class var avcodec_alloc_context3           : Tavcodec_alloc_context3;       // デコードコンテキストを確保する関数
+    class var avcodec_parameters_to_context    : Tavcodec_parameters_to_context;// stream情報をcontextへコピー
+    class var avcodec_open2                    : Tavcodec_open2;                // デコーダを開く関数
+    class var avcodec_free_context             : Tavcodec_free_context;         // デコードコンテキストを解放する関数
+    class var avcodec_send_packet              : Tavcodec_send_packet;          // パケットをデコーダへ渡す関数
+    class var avcodec_receive_frame            : Tavcodec_receive_frame;        // デコード済みフレームを受け取る関数
+    class var avcodec_flush_buffers            : Tavcodec_flush_buffers;        // シーク後に内部バッファを捨てる関数
+    class var av_packet_alloc                  : Tav_packet_alloc;              // AVPacketを確保する関数
+    class var av_packet_free                   : Tav_packet_free;               // AVPacketを解放する関数
+    class var av_packet_unref                  : Tav_packet_unref;              // AVPacketの参照を解放する関数
+    class var av_frame_alloc                   : Tav_frame_alloc;               // AVFrameを確保する関数
+    class var av_frame_free                    : Tav_frame_free;                // AVFrameを解放する関数
+    class var av_strerror                      : Tav_strerror;                  // FFmpegエラーコードを文字列化する関数
+    class var av_get_sample_fmt_name           : Tav_get_sample_fmt_name;       // サンプル形式名を取得する関数
+    class var av_get_pix_fmt_name              : Tav_get_pix_fmt_name;          // pixel format名を取得する関数
+    class var av_channel_layout_default        : Tav_channel_layout_default;    // 標準チャンネルレイアウトを作る関数
+    class var av_channel_layout_copy           : Tav_channel_layout_copy;       // チャンネルレイアウトをコピーする関数
+    class var av_channel_layout_uninit         : Tav_channel_layout_uninit;     // チャンネルレイアウトを解放する関数
+    class var sws_getContext                   : Tsws_getContext;               // 色変換コンテキストを作る関数
+    class var sws_scale                        : Tsws_scale;                    // フレームをBGRへ変換する関数
+    class var sws_freeContext                  : Tsws_freeContext;              // 色変換コンテキストを解放する関数
+    class var avcodec_find_decoder_by_name     : Tavcodec_find_decoder_by_name; // 名前からデコーダを探す関数
+    class var av_frame_unref                   : Tav_frame_unref;               // AVFrameの参照を解放する関数
+    class var av_hwdevice_ctx_create           : Tav_hwdevice_ctx_create;       // HW device contextを作る関数
+    class var av_hwframe_transfer_data         : Tav_hwframe_transfer_data;     // HW frameをCPU側へ転送する関数
+    class var av_buffer_unref                  : Tav_buffer_unref;              // AVBufferRefを解放する関数
+    class var swr_alloc_set_opts2              : Tswr_alloc_set_opts2;          // 音声変換コンテキストを作る関数
+    class var swr_init                         : Tswr_init;                    // 音声変換コンテキストを初期化する関数
+    class var swr_convert                      : Tswr_convert;                 // 音声フレームをPCMへ変換する関数
+    class var swr_free                         : Tswr_free;                    // 音声変換コンテキストを解放する関数
     // この入力プラグインが置かれているフォルダを取得する。
     class function ModuleDirectory: string; static;
     // 指定DLLを実行ファイルフォルダからロードする。
@@ -284,6 +302,8 @@ function StreamTimestampFromMs(Stream: PAVStream; PositionMs: Integer): Int64;
 function StreamTimestampToMs(Stream: PAVStream; Timestamp: Int64): Integer;
 // FFmpegのサンプル形式番号を表示用文字列に変換する。
 function SampleFormatName(SampleFormat: Integer): string;
+// FFmpegのpixel format番号を表示用文字列に変換する。
+function PixelFormatName(PixelFormat: Integer): string;
 implementation
 
 // この入力プラグインが置かれているフォルダを取得する。
@@ -342,6 +362,7 @@ begin
 
   av_strerror := Tav_strerror(LoadProc(FAvUtil, 'av_strerror'));
   av_get_sample_fmt_name := Tav_get_sample_fmt_name(LoadProc(FAvUtil, 'av_get_sample_fmt_name'));
+  av_get_pix_fmt_name := Tav_get_pix_fmt_name(LoadProc(FAvUtil, 'av_get_pix_fmt_name'));
   av_frame_alloc := Tav_frame_alloc(LoadProc(FAvUtil, 'av_frame_alloc'));
   av_frame_free := Tav_frame_free(LoadProc(FAvUtil, 'av_frame_free'));
   av_frame_unref := Tav_frame_unref(LoadProc(FAvUtil, 'av_frame_unref'));
@@ -361,9 +382,11 @@ begin
   av_seek_frame := Tav_seek_frame(LoadProc(FAvFormat, 'av_seek_frame'));
 
   avcodec_find_decoder := Tavcodec_find_decoder(LoadProc(FAvCodec, 'avcodec_find_decoder'));
-  avcodec_find_decoder_by_name := Tavcodec_find_decoder_by_name(LoadProc(FAvCodec, 'avcodec_find_decoder_by_name'));
+  avcodec_find_decoder_by_name :=
+    Tavcodec_find_decoder_by_name(LoadProc(FAvCodec, 'avcodec_find_decoder_by_name'));
   avcodec_alloc_context3 := Tavcodec_alloc_context3(LoadProc(FAvCodec, 'avcodec_alloc_context3'));
-  avcodec_parameters_to_context := Tavcodec_parameters_to_context(LoadProc(FAvCodec, 'avcodec_parameters_to_context'));
+  avcodec_parameters_to_context :=
+    Tavcodec_parameters_to_context(LoadProc(FAvCodec, 'avcodec_parameters_to_context'));
   avcodec_open2 := Tavcodec_open2(LoadProc(FAvCodec, 'avcodec_open2'));
   avcodec_free_context := Tavcodec_free_context(LoadProc(FAvCodec, 'avcodec_free_context'));
   avcodec_send_packet := Tavcodec_send_packet(LoadProc(FAvCodec, 'avcodec_send_packet'));
@@ -449,6 +472,20 @@ begin
   if Assigned(TFFmpegApi.av_get_sample_fmt_name) then
   begin
     Name := TFFmpegApi.av_get_sample_fmt_name(SampleFormat);
+    if Name <> nil then
+      Result := string(AnsiString(Name));
+  end;
+end;
+
+// FFmpegのpixel format番号を表示用文字列に変換する。
+function PixelFormatName(PixelFormat: Integer): string;
+var
+  Name: PAnsiChar; // FFmpegから返るpixel format名
+begin
+  Result := Format('fmt %d', [PixelFormat]);
+  if Assigned(TFFmpegApi.av_get_pix_fmt_name) then
+  begin
+    Name := TFFmpegApi.av_get_pix_fmt_name(PixelFormat);
     if Name <> nil then
       Result := string(AnsiString(Name));
   end;

@@ -15,11 +15,11 @@ type
   private
     FDecoder               : TFFmpegDecoder; // 音声読み取り専用に開くFFmpegデコーダ
     FFormat                : WAVEFORMATEX; // AviUtl2へ返すPCM形式
-    FPcm                   : TBytes; // デコード済みPCMキャッシュ
-    FSampleCount           : Integer; // 音声全体の想定サンプル数
-    FDecodedSamples        : Integer; // PCMキャッシュへデコード済みのサンプル数
-    FDecodeFinished        : Boolean; // FFmpeg側の音声読み取りが終端に達したか
-    FLastError             : string; // 直近の音声読み取りエラー
+    FPcm                   : TBytes;       // デコード済みPCMキャッシュ
+    FSampleCount           : Integer;      // 音声全体の想定サンプル数
+    FDecodedSamples        : Integer;      // PCMキャッシュへデコード済みのサンプル数
+    FDecodeFinished        : Boolean;      // FFmpeg側の音声読み取りが終端に達したか
+    FLastError             : string;       // 直近の音声読み取りエラー
 
     // WAVEFORMATEXのポインタをAviUtl2用に返す。
     function GetFormatPtr : PWAVEFORMATEX;
@@ -29,7 +29,8 @@ type
     // 音声読み取り用デコーダとPCMキャッシュを解放する。
     destructor Destroy; override;
     // 指定ファイルの音声ストリームを読み取り可能な状態で開く。
-    function Open(const FileName: string; const VideoInfo: TVideoInfo; out ErrorMessage: string): Boolean;
+    function Open(const FileName: string; const VideoInfo: TVideoInfo;
+      out ErrorMessage: string): Boolean;
     // 指定範囲のPCMサンプルをAviUtl2のバッファへコピーする。
     function ReadAudio(Start, SampleLength: Integer; Buffer: Pointer): Integer;
     property Format: WAVEFORMATEX read FFormat;
@@ -62,10 +63,11 @@ begin
 end;
 
 // 指定ファイルの音声ストリームを読み取り可能な状態で開く。
-function TPluginAudioInputReader.Open(const FileName: string; const VideoInfo: TVideoInfo; out ErrorMessage: string): Boolean;
+function TPluginAudioInputReader.Open(const FileName: string;
+  const VideoInfo: TVideoInfo; out ErrorMessage: string): Boolean;
 var
-  AudioInfo: TVideoInfo; // 音声読み取り用デコーダで取得した動画情報
-  AudioDurationSec: Double; // サンプル数計算に使う音声長
+  AudioInfo        : TVideoInfo; // 音声読み取り用デコーダで取得した動画情報
+  AudioDurationSec : Double;     // サンプル数計算に使う音声長
 begin
   Result := False;
   ErrorMessage := '';
@@ -106,10 +108,10 @@ end;
 // 指定範囲のPCMサンプルをAviUtl2のバッファへコピーする。
 function TPluginAudioInputReader.ReadAudio(Start, SampleLength: Integer; Buffer: Pointer): Integer;
 var
-  AvailableSamples: Integer; // 要求開始位置から残っているサンプル数
-  SamplesToCopy: Integer; // 実際にコピーするサンプル数
-  SourceOffset: Integer; // PCMキャッシュ内のコピー開始バイト位置
-  BytesToCopy: Integer; // 実際にコピーするバイト数
+  AvailableSamples : Integer; // 要求開始位置から残っているサンプル数
+  SamplesToCopy    : Integer; // 実際にコピーするサンプル数
+  SourceOffset     : Integer; // PCMキャッシュ内のコピー開始バイト位置
+  BytesToCopy      : Integer; // 実際にコピーするバイト数
 begin
   Result := 0;
   if (Buffer = nil) or (SampleLength <= 0) or (FDecoder = nil) or (FSampleCount <= 0) then

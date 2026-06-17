@@ -1,5 +1,8 @@
 ﻿unit FFmpegDecoderSeekBgr24;
 
+// 指定位置へseekし、映像フレームをBGR24バッファへ直接変換する。
+// 24bit出力のseek decodeをデコーダ本体から分離する。
+
 interface
 
 uses
@@ -21,11 +24,12 @@ uses
 
 const
 {$IFDEF DEBUG}
-  DECODE_TRACE_ENABLED = True;
+  DECODE_TRACE_ENABLED = True;  // Debug時だけデコードログを出す
 {$ELSE}
-  DECODE_TRACE_ENABLED = False;
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成を避ける
 {$ENDIF}
 
+// Debug時のデコードログをTEMPへ追記する。
 procedure DecodeTrace(const Msg: string);
 var
   F: TextFile;
@@ -165,8 +169,12 @@ begin
 {$ENDIF}
 {$IFDEF DEBUG}
             if DECODE_TRACE_ENABLED then
-              DecodeTrace(Format('seek_decode_bgr24 file="%s" pos_ms=%d target_ts=%d frame_pts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
-                [Context.FileName, PositionMs, TargetTs, Frame.pts, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+              DecodeTrace(Format(
+                'seek_decode_bgr24 file="%s" pos_ms=%d target_ts=%d ' +
+                'frame_pts=%d read_packets=%d video_packets=%d ' +
+                'decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
+                [Context.FileName, PositionMs, TargetTs, Frame.pts,
+                 ReadPacketCount, VideoPacketCount, DecodedFrameCount,
                  TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
 {$ENDIF}
             Result := True;
@@ -184,7 +192,9 @@ begin
 {$ENDIF}
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
-      DecodeTrace(Format('seek_decode_bgr24_failed file="%s" pos_ms=%d target_ts=%d read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
+      DecodeTrace(Format(
+        'seek_decode_bgr24_failed file="%s" pos_ms=%d target_ts=%d ' +
+        'read_packets=%d video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
         [Context.FileName, PositionMs, TargetTs, ReadPacketCount, VideoPacketCount, DecodedFrameCount,
          TotalStopwatch.Elapsed.TotalMilliseconds]));
 {$ENDIF}
