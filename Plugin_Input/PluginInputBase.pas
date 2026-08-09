@@ -24,12 +24,14 @@ function PluginInputConfig(hwnd: HWND; hinst: HINST): BOOL;
 implementation
 
 uses
-  System.Diagnostics, System.Math, System.SyncObjs, FFmpegDecoderTypes, FFmpegDecoder,
+  System.Diagnostics, System.Generics.Collections, System.Math, System.SyncObjs,
+  FFmpegDecoderTypes, FFmpegDecoder,
   PluginAudioInputReader, PluginInputSettings;
 
 const
   MAX_FORWARD_DECODE_GAP      = 120;               // 近い前方ジャンプを順方向decodeで追う最大frame数
-  SHARED_FRAME_CACHE_CAPACITY = 16;                // ファイル間共有フレームキャッシュの最大保持数
+  SHARED_FRAME_CACHE_SLOTS    = 1024;              // 低解像度素材も保持できるキャッシュ管理枠数
+  FRAME_CACHE_PER_FILE_LIMIT  = 64;                // 1ファイルが保持できる最大フレーム数
   VIDEO_OUTPUT_BGRX32         = 0;                 // AviUtl2へ32bit BGRxで返す形式
   VIDEO_OUTPUT_BGR24          = 1;                 // AviUtl2へ24bit BGRで返す形式
   VIDEO_OUTPUT_YUY2           = 2;                 // AviUtl2へYUY2で返す形式
@@ -82,6 +84,7 @@ type
 
   TSharedFrameCacheEntry = record
     FileName  : string;  // キャッシュ元ファイル名
+    FileKey   : string;  // 大文字小文字を無視した比較用ファイル名
     Frame     : Integer; // キャッシュしたフレーム番号
     ImageSize : Integer; // キャッシュした映像バッファサイズ
     Data      : TBytes;  // AviUtl2へ返した映像データ
@@ -89,10 +92,11 @@ type
   end;
 
 var
-  SharedFrameCache        : array[0..SHARED_FRAME_CACHE_CAPACITY - 1] of TSharedFrameCacheEntry;
-  // 複数open間で共有するframe cache
-  SharedFrameCacheClock   : UInt64;           // 共有キャッシュのLRU順序カウンタ
-  SharedFrameCacheLock    : TCriticalSection; // 共有キャッシュ保護用ロック
+  SharedFrameCache        : array of TSharedFrameCacheEntry; // ファイル別に残す共有フレームキャッシュ
+  SharedFrameCacheClock   : UInt64;                       // 共有キャッシュのLRU順序カウンタ
+  SharedFrameCacheBytes   : Int64;                        // 現在保持している映像データの合計byte数
+  SharedFrameCacheCounts  : TDictionary<string, Integer>; // 正規化ファイル名ごとの保持フレーム数
+  SharedFrameCacheLock    : TCriticalSection;             // 共有キャッシュ保護用ロック
   ReusableDecoder         : TFFmpegDecoder;   // close直後に次openへ引き渡すデコーダ
   ReusableDecoderFileName : string;           // 再利用デコーダが開いているファイル名
   ReusableDecoderInfo     : TVideoInfo;       // 再利用デコーダの動画情報
@@ -105,6 +109,108 @@ var
 function DecodeTraceLogFileName: string;
 begin
   Result := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
+end;
+
+// キャッシュ比較用にファイル名の大文字小文字を正規化する。
+function FrameCacheFileKey(const FileName: string): string;
+begin
+  Result := LowerCase(FileName);
+end;
+
+// 設定された共有フレームキャッシュ上限をbyte数で返す。
+function SharedFrameCacheMaxBytes: Int64;
+begin
+  Result := Int64(GetVideoFrameCacheSizeMb) * 1024 * 1024;
+end;
+
+// 指定ファイルが現在保持しているキャッシュ枚数を返す。
+function SharedFrameCacheFileCount(const FileKey: string): Integer;
+begin
+  Result := 0;
+  if SharedFrameCacheCounts <> nil then
+    SharedFrameCacheCounts.TryGetValue(FileKey, Result);
+end;
+
+// 指定slotの映像データとファイル別枚数をキャッシュから除外する。
+procedure RemoveSharedFrameCacheEntry(Index: Integer);
+var
+  FileKey: string;
+  FileCount: Integer;
+begin
+  if (Index < Low(SharedFrameCache)) or (Index > High(SharedFrameCache)) or
+    (Length(SharedFrameCache[Index].Data) = 0) then
+    Exit;
+
+  FileKey := SharedFrameCache[Index].FileKey;
+  SharedFrameCacheBytes := SharedFrameCacheBytes - Length(SharedFrameCache[Index].Data);
+  FileCount := SharedFrameCacheFileCount(FileKey);
+  if FileCount <= 1 then
+    SharedFrameCacheCounts.Remove(FileKey)
+  else
+    SharedFrameCacheCounts.AddOrSetValue(FileKey, FileCount - 1);
+  SharedFrameCache[Index].Data := nil;
+  SharedFrameCache[Index].FileName := '';
+  SharedFrameCache[Index].FileKey := '';
+  SharedFrameCache[Index].Frame := -1;
+  SharedFrameCache[Index].ImageSize := 0;
+  SharedFrameCache[Index].LastUsed := 0;
+end;
+
+// 指定ファイルで最も古く使われたキャッシュslotを探す。
+function FindOldestSharedFrameForFile(const FileKey: string): Integer;
+var
+  I: Integer;
+  OldestUsed: UInt64;
+begin
+  Result := -1;
+  OldestUsed := High(UInt64);
+  for I := Low(SharedFrameCache) to High(SharedFrameCache) do
+    if (Length(SharedFrameCache[I].Data) > 0) and
+      (SharedFrameCache[I].FileKey = FileKey) and
+      (SharedFrameCache[I].LastUsed < OldestUsed) then
+    begin
+      Result := I;
+      OldestUsed := SharedFrameCache[I].LastUsed;
+    end;
+end;
+
+// 最も多くキャッシュを持つファイルから古いslotを選び、素材間の保持枚数を均す。
+function FindSharedFrameEvictionCandidate: Integer;
+var
+  I: Integer;
+  FileCount: Integer;
+  BestFileCount: Integer;
+  OldestUsed: UInt64;
+begin
+  Result := -1;
+  BestFileCount := -1;
+  OldestUsed := High(UInt64);
+  for I := Low(SharedFrameCache) to High(SharedFrameCache) do
+    if Length(SharedFrameCache[I].Data) > 0 then
+    begin
+      FileCount := SharedFrameCacheFileCount(SharedFrameCache[I].FileKey);
+      if (FileCount > BestFileCount) or
+        ((FileCount = BestFileCount) and (SharedFrameCache[I].LastUsed < OldestUsed)) then
+      begin
+        Result := I;
+        BestFileCount := FileCount;
+        OldestUsed := SharedFrameCache[I].LastUsed;
+      end;
+    end;
+end;
+
+// 未使用のキャッシュslotを返す。
+function FindEmptySharedFrameCacheSlot: Integer;
+var
+  I: Integer;
+begin
+  Result := -1;
+  for I := Low(SharedFrameCache) to High(SharedFrameCache) do
+    if Length(SharedFrameCache[I].Data) = 0 then
+    begin
+      Result := I;
+      Exit;
+    end;
 end;
 
 // Debug時のデコードログをTEMPへ追記する。
@@ -183,6 +289,7 @@ function TryReadSharedFrameCache(const FileName: string; Frame, ImageSize: Integ
   Buffer: Pointer): Boolean;
 var
   I: Integer;
+  FileKey: string;
 begin
   Result := False;
   if (SharedFrameCacheLock = nil) or (Buffer = nil) or (ImageSize <= 0) then
@@ -190,8 +297,9 @@ begin
 
   SharedFrameCacheLock.Enter;
   try
+    FileKey := FrameCacheFileKey(FileName);
     for I := Low(SharedFrameCache) to High(SharedFrameCache) do
-      if SameText(SharedFrameCache[I].FileName, FileName) and
+      if (SharedFrameCache[I].FileKey = FileKey) and
         (SharedFrameCache[I].Frame = Frame) and
         (SharedFrameCache[I].ImageSize = ImageSize) and
         (Length(SharedFrameCache[I].Data) = ImageSize) then
@@ -213,18 +321,23 @@ procedure SaveSharedFrameCache(const FileName: string; Frame, ImageSize: Integer
 var
   I: Integer;
   Slot: Integer;
-  OldestUsed: UInt64;
+  FileKey: string;
+  FileCount: Integer;
+  MaxBytes: Int64;
 begin
   if (SharedFrameCacheLock = nil) or (Buffer = nil) or (ImageSize <= 0) then
     Exit;
 
   SharedFrameCacheLock.Enter;
   try
-    Slot := Low(SharedFrameCache);
-    OldestUsed := High(UInt64);
+    MaxBytes := SharedFrameCacheMaxBytes;
+    if (MaxBytes <= 0) or (ImageSize > MaxBytes) then
+      Exit;
+
+    FileKey := FrameCacheFileKey(FileName);
+    Slot := -1;
     for I := Low(SharedFrameCache) to High(SharedFrameCache) do
-    begin
-      if SameText(SharedFrameCache[I].FileName, FileName) and
+      if (SharedFrameCache[I].FileKey = FileKey) and
         (SharedFrameCache[I].Frame = Frame) and
         (SharedFrameCache[I].ImageSize = ImageSize) then
       begin
@@ -232,21 +345,70 @@ begin
         Break;
       end;
 
-      if (Length(SharedFrameCache[I].Data) = 0) or (SharedFrameCache[I].LastUsed < OldestUsed) then
-      begin
-        Slot := I;
-        OldestUsed := SharedFrameCache[I].LastUsed;
-      end;
+    if Slot >= 0 then
+    begin
+      Move(Buffer^, SharedFrameCache[Slot].Data[0], ImageSize);
+      Inc(SharedFrameCacheClock);
+      SharedFrameCache[Slot].LastUsed := SharedFrameCacheClock;
+      Exit;
     end;
 
-    if Length(SharedFrameCache[Slot].Data) <> ImageSize then
-      SetLength(SharedFrameCache[Slot].Data, ImageSize);
+    FileCount := SharedFrameCacheFileCount(FileKey);
+    if FileCount >= FRAME_CACHE_PER_FILE_LIMIT then
+    begin
+      Slot := FindOldestSharedFrameForFile(FileKey);
+      RemoveSharedFrameCacheEntry(Slot);
+    end;
+
+    while SharedFrameCacheBytes + ImageSize > MaxBytes do
+    begin
+      Slot := FindSharedFrameEvictionCandidate;
+      if Slot < 0 then
+        Exit;
+      RemoveSharedFrameCacheEntry(Slot);
+    end;
+
+    Slot := FindEmptySharedFrameCacheSlot;
+    if Slot < 0 then
+    begin
+      Slot := FindSharedFrameEvictionCandidate;
+      if Slot < 0 then
+        Exit;
+      RemoveSharedFrameCacheEntry(Slot);
+      Slot := FindEmptySharedFrameCacheSlot;
+      if Slot < 0 then
+        Exit;
+    end;
+
+    SetLength(SharedFrameCache[Slot].Data, ImageSize);
     Move(Buffer^, SharedFrameCache[Slot].Data[0], ImageSize);
     SharedFrameCache[Slot].FileName := FileName;
+    SharedFrameCache[Slot].FileKey := FileKey;
     SharedFrameCache[Slot].Frame := Frame;
     SharedFrameCache[Slot].ImageSize := ImageSize;
     Inc(SharedFrameCacheClock);
     SharedFrameCache[Slot].LastUsed := SharedFrameCacheClock;
+    SharedFrameCacheBytes := SharedFrameCacheBytes + ImageSize;
+    SharedFrameCacheCounts.AddOrSetValue(FileKey,
+      SharedFrameCacheFileCount(FileKey) + 1);
+  finally
+    SharedFrameCacheLock.Leave;
+  end;
+end;
+
+// Debug集計用に指定ファイルの保持枚数とキャッシュ全体の使用byte数を返す。
+procedure GetSharedFrameCacheStats(const FileName: string; out FileFrames: Integer;
+  out TotalBytes: Int64);
+begin
+  FileFrames := 0;
+  TotalBytes := 0;
+  if SharedFrameCacheLock = nil then
+    Exit;
+
+  SharedFrameCacheLock.Enter;
+  try
+    FileFrames := SharedFrameCacheFileCount(FrameCacheFileKey(FileName));
+    TotalBytes := SharedFrameCacheBytes;
   finally
     SharedFrameCacheLock.Leave;
   end;
@@ -414,12 +576,19 @@ var
   AudioErrorMessage: string;
 {$IFDEF DEBUG}
   ReusedDecoder: Boolean;
+  OpenStopwatch: TStopwatch;
+  StageStopwatch: TStopwatch;
+  DecoderOpenMs: Double;
+  AudioReaderOpenMs: Double;
 {$ENDIF}
 begin
   Result := nil;
   AudioErrorMessage := '';
 {$IFDEF DEBUG}
   ReusedDecoder := False;
+  AudioReaderOpenMs := 0;
+  if DECODE_TRACE_ENABLED then
+    OpenStopwatch := TStopwatch.StartNew;
 {$ENDIF}
   New(Ctx);
   FillChar(Ctx^, SizeOf(Ctx^), 0);
@@ -433,6 +602,10 @@ begin
 {$ENDIF}
     Ctx^.LastDecodedFrame := -1;
 
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      StageStopwatch := TStopwatch.StartNew;
+{$ENDIF}
     if ENABLE_REUSABLE_DECODER and
       TryTakeReusableDecoder(Ctx^.FileName, Ctx^.Decoder, VideoInfo, Ctx^.LastDecodedFrame) then
     begin
@@ -449,12 +622,27 @@ begin
         Ctx^.LastError := ErrorMessage;
 {$IFDEF DEBUG}
         if DECODE_TRACE_ENABLED then
-          DecodeTrace(Format('open failed file="%s" err=%s', [Ctx^.FileName, ErrorMessage]));
+        begin
+          StageStopwatch.Stop;
+          DecoderOpenMs := StageStopwatch.Elapsed.TotalMilliseconds;
+          OpenStopwatch.Stop;
+          DecodeTrace(Format(
+            'open failed file="%s" elapsed_ms=%.3f decoder_open_ms=%.3f err="%s"',
+            [Ctx^.FileName, OpenStopwatch.Elapsed.TotalMilliseconds, DecoderOpenMs,
+             ErrorMessage]));
+        end;
 {$ENDIF}
         FreeFileContext(Ctx);
         Exit;
       end;
     end;
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      StageStopwatch.Stop;
+      DecoderOpenMs := StageStopwatch.Elapsed.TotalMilliseconds;
+    end;
+{$ENDIF}
 
     if Ctx^.Decoder <> nil then
     begin
@@ -517,6 +705,10 @@ begin
 
       if VideoInfo.Audio.Present then
       begin
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+          StageStopwatch := TStopwatch.StartNew;
+{$ENDIF}
         Ctx^.AudioInput := TPluginAudioInputReader.Create;
         if not Ctx^.AudioInput.Open(Ctx^.FileName, VideoInfo, AudioErrorMessage) then
         begin
@@ -524,19 +716,33 @@ begin
           Ctx^.AudioInput := nil;
           Ctx^.LastError := AudioErrorMessage;
         end;
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+        begin
+          StageStopwatch.Stop;
+          AudioReaderOpenMs := StageStopwatch.Elapsed.TotalMilliseconds;
+        end;
+{$ENDIF}
       end
       else
         Ctx^.LastError := AudioErrorMessage;
 
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
+      begin
+        OpenStopwatch.Stop;
         DecodeTrace(Format('open ok file="%s" reused=%s last=%d width=%d ' +
           'height=%d duration=%.3f fps=%.6f frames=%d pix_fmt="%s" ' +
-          'alpha=%s output_format=%d audio=%s audio_err=%s',
+          'alpha=%s output_format=%d audio=%s audio_err="%s" ' +
+          'elapsed_ms=%.3f decoder_open_ms=%.3f audio_reader_open_ms=%.3f ' +
+          'frame_cache_mb=%d frame_cache_per_file=%d',
           [Ctx^.FileName, BoolToStr(ReusedDecoder, True), Ctx^.LastDecodedFrame,
            Ctx^.Width, Ctx^.Height, Ctx^.DurationSec, VideoInfo.Fps,
            Ctx^.FrameCount, VideoInfo.PixelFormatName, BoolToStr(VideoInfo.HasAlpha, True),
-           Ctx^.VideoOutputFormat, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage]));
+           Ctx^.VideoOutputFormat, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage,
+           OpenStopwatch.Elapsed.TotalMilliseconds, DecoderOpenMs, AudioReaderOpenMs,
+           GetVideoFrameCacheSizeMb, FRAME_CACHE_PER_FILE_LIMIT]));
+      end;
 {$ENDIF}
 
       Result := Ctx;
@@ -555,6 +761,8 @@ function PluginInputClose(ih: INPUT_HANDLE): BOOL;
 var
   Ctx: PFileContext;
   Stats: TDecodeLoadStats;
+  CacheFileFrames: Integer;
+  CacheTotalBytes: Int64;
 {$ENDIF}
 begin
   Result := False;
@@ -566,17 +774,20 @@ begin
   if DECODE_TRACE_ENABLED and (Ctx^.Decoder <> nil) then
   begin
     Stats := Ctx^.Decoder.DecodeStats;
+    GetSharedFrameCacheStats(Ctx^.FileName, CacheFileFrames, CacheTotalBytes);
     DecodeTrace(Format('close_summary file="%s" read_video_calls=%d ' +
       'read_video_slow=%d read_video_avg_ms=%.3f read_video_max_ms=%.3f ' +
       'decoder_video_frames=%d decoder_avg_ms=%.3f decoder_max_ms=%.3f ' +
       'decode_avg_ms=%.3f decode_max_ms=%.3f transfer_avg_ms=%.3f ' +
-      'transfer_max_ms=%.3f convert_avg_ms=%.3f convert_max_ms=%.3f',
+      'transfer_max_ms=%.3f convert_avg_ms=%.3f convert_max_ms=%.3f ' +
+      'cache_file_frames=%d cache_total_mb=%.3f cache_limit_mb=%d',
       [Ctx^.FileName, Ctx^.ReadVideoCallCount, Ctx^.SlowReadVideoCount,
        IfThen(Ctx^.ReadVideoCallCount > 0, Ctx^.ReadVideoTotalMs / Ctx^.ReadVideoCallCount, 0.0),
        Ctx^.ReadVideoMaxMs, Stats.VideoFrames, Stats.VideoAverageMs, Stats.VideoMaxMs,
        Stats.VideoDecodeAverageMs, Stats.VideoDecodeMaxMs,
        Stats.VideoTransferAverageMs, Stats.VideoTransferMaxMs,
-       Stats.VideoConvertAverageMs, Stats.VideoConvertMaxMs]));
+       Stats.VideoConvertAverageMs, Stats.VideoConvertMaxMs, CacheFileFrames,
+       CacheTotalBytes / (1024.0 * 1024.0), GetVideoFrameCacheSizeMb]));
   end;
 {$ENDIF}
 
@@ -822,10 +1033,14 @@ begin
 end;
 
 initialization
+  SetLength(SharedFrameCache, SHARED_FRAME_CACHE_SLOTS);
+  SharedFrameCacheCounts := TDictionary<string, Integer>.Create;
   SharedFrameCacheLock := TCriticalSection.Create;
 
 finalization
   ReusableDecoder.Free;
+  SharedFrameCache := nil;
+  SharedFrameCacheCounts.Free;
   SharedFrameCacheLock.Free;
 
 end.

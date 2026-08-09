@@ -332,6 +332,15 @@ var
   DecoderMode       : TVideoDecoderMode;  // 設定で選択された映像デコード方式
   DecodeBackend     : string;             // ログ用のbackend名
   GpuInferred       : string;             // ログ用の推定GPU名
+{$IFDEF DEBUG}
+  OpenStopwatch     : TStopwatch;         // ファイルopen全体の所要時間
+  StageStopwatch    : TStopwatch;         // open内の各FFmpeg処理の所要時間
+  ApiLoadMs         : Double;             // FFmpeg DLLロード時間
+  FormatOpenMs      : Double;             // コンテナを開く時間
+  StreamInfoMs      : Double;             // ストリーム情報解析時間
+  VideoDecoderMs    : Double;             // 映像デコーダ初期化時間
+  AudioDecoderMs    : Double;             // 音声デコーダ初期化時間
+{$ENDIF}
 begin
   Close;
   FillChar(Info, SizeOf(Info), 0);
@@ -351,19 +360,65 @@ begin
   OpenedWithQsv := False;
   VideoDecoderName := '';
   DecoderMode := GetVideoDecoderMode;
+{$IFDEF DEBUG}
+  VideoDecoderMs := 0;
+  if DECODE_TRACE_ENABLED then
+    OpenStopwatch := TStopwatch.StartNew;
+{$ENDIF}
 
   try
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      StageStopwatch := TStopwatch.StartNew;
+{$ENDIF}
     TFFmpegApi.EnsureLoaded;
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      StageStopwatch.Stop;
+      ApiLoadMs := StageStopwatch.Elapsed.TotalMilliseconds;
+      DecodeTrace(Format('open_stage file="%s" stage="api_load" elapsed_ms=%.3f',
+        [FileName, ApiLoadMs]));
+    end;
+{$ENDIF}
 
     Utf8FileName := UTF8String(FileName);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      StageStopwatch := TStopwatch.StartNew;
+{$ENDIF}
     Ret := TFFmpegApi.avformat_open_input(@FormatContext, PAnsiChar(Utf8FileName), nil, nil);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      StageStopwatch.Stop;
+      FormatOpenMs := StageStopwatch.Elapsed.TotalMilliseconds;
+      DecodeTrace(Format(
+        'open_stage file="%s" stage="format_open" elapsed_ms=%.3f ret=%d err="%s"',
+        [FileName, FormatOpenMs, Ret, TFFmpegApi.ErrorText(Ret)]));
+    end;
+{$ENDIF}
     if Ret < 0 then
     begin
       ErrorMessage := TFFmpegApi.ErrorText(Ret);
       Exit;
     end;
 
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      StageStopwatch := TStopwatch.StartNew;
+{$ENDIF}
     Ret := TFFmpegApi.avformat_find_stream_info(FormatContext, nil);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      StageStopwatch.Stop;
+      StreamInfoMs := StageStopwatch.Elapsed.TotalMilliseconds;
+      DecodeTrace(Format(
+        'open_stage file="%s" stage="stream_info" elapsed_ms=%.3f ret=%d err="%s" streams=%d',
+        [FileName, StreamInfoMs, Ret, TFFmpegApi.ErrorText(Ret), FormatContext.nb_streams]));
+    end;
+{$ENDIF}
     if Ret < 0 then
     begin
       ErrorMessage := TFFmpegApi.ErrorText(Ret);
@@ -379,6 +434,10 @@ begin
     Stream := nil;
     if HasVideoStream then
     begin
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        StageStopwatch := TStopwatch.StartNew;
+{$ENDIF}
       Stream := StreamAt(FormatContext, StreamIndex);
       if not Assigned(Stream) then
       begin
@@ -541,14 +600,27 @@ begin
       Info.HasAlpha := PixelFormatHasAlpha(Info.PixelFormatName);
       Info.FpsText := RationalToText(Stream.avg_frame_rate);
       Info.Fps := RationalToDouble(Stream.avg_frame_rate);
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        StageStopwatch.Stop;
+        VideoDecoderMs := StageStopwatch.Elapsed.TotalMilliseconds;
+        DecodeTrace(Format(
+          'open_stage file="%s" stage="video_decoder" elapsed_ms=%.3f backend=%s decoder="%s"',
+          [FileName, VideoDecoderMs, DecodeBackend, VideoDecoderName]));
+      end;
+{$ENDIF}
 
       DecodeTrace(Format(
         'video_decoder file="%s" decode_mode=%s decode_backend=%s ' +
         'gpu_inferred="%s" nvidia_nvdec_supported=False decoder="%s" ' +
-        'qsv=%s codec_id=%d pix_fmt="%s" alpha=%s',
+        'qsv=%s codec_id=%d codec_tag=%d profile=%d level=%d bit_rate=%d ' +
+        'width=%d height=%d fps=%.6f pix_fmt="%s" alpha=%s',
         [FileName, VideoDecoderModeToText(DecoderMode), DecodeBackend, GpuInferred,
          VideoDecoderName, BoolToStr(OpenedWithQsv, True), CodecPar.codec_id,
-         Info.PixelFormatName, BoolToStr(Info.HasAlpha, True)]));
+         CodecPar.codec_tag, CodecPar.profile, CodecPar.level, CodecPar.bit_rate,
+         Info.Width, Info.Height, Info.Fps, Info.PixelFormatName,
+         BoolToStr(Info.HasAlpha, True)]));
 
       if (Info.Width <= 0) or (Info.Height <= 0) then
       begin
@@ -562,8 +634,22 @@ begin
       Exit;
     end;
 
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      StageStopwatch := TStopwatch.StartNew;
+{$ENDIF}
     OpenAudioDecoder(FormatContext, Info, AudioCodecContext, AudioStream,
       AudioStreamIndex, AudioFrame, SwrContext);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      StageStopwatch.Stop;
+      AudioDecoderMs := StageStopwatch.Elapsed.TotalMilliseconds;
+      DecodeTrace(Format(
+        'open_stage file="%s" stage="audio_decoder" elapsed_ms=%.3f present=%s err="%s"',
+        [FileName, AudioDecoderMs, BoolToStr(Info.Audio.Present, True), Info.Audio.OpenError]));
+    end;
+{$ENDIF}
     if (not HasVideoStream) and ((not Info.Audio.Present) or (Info.Audio.OpenError <> '')) then
     begin
       ErrorMessage := 'Audio decoder is not open. ' + Info.Audio.OpenError;
@@ -605,6 +691,20 @@ begin
     AudioFrame := nil;
     SwrContext := nil;
     Result := True;
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      OpenStopwatch.Stop;
+      DecodeTrace(Format(
+        'open_summary file="%s" elapsed_ms=%.3f api_load_ms=%.3f ' +
+        'format_open_ms=%.3f stream_info_ms=%.3f video_decoder_ms=%.3f ' +
+        'audio_decoder_ms=%.3f streams=%d duration_sec=%.3f',
+        [FileName, OpenStopwatch.Elapsed.TotalMilliseconds, ApiLoadMs, FormatOpenMs,
+         StreamInfoMs, VideoDecoderMs, AudioDecoderMs,
+         PAVFormatContext(FFormatContext).nb_streams,
+         Info.DurationSec]));
+    end;
+{$ENDIF}
   except
     on E: Exception do
       ErrorMessage := E.ClassName + ': ' + E.Message;

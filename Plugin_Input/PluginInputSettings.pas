@@ -9,18 +9,22 @@ type
   TVideoDecoderMode = (vdmAuto, vdmQsv, vdmSoftware);
 
 function GetVideoDecoderMode: TVideoDecoderMode;
+function GetVideoFrameCacheSizeMb: Integer;
 function VideoDecoderModeToText(Mode: TVideoDecoderMode): string;
 function ShowPluginSettingsDialog(Parent: HWND; DllInstance: HINST): BOOL;
 
 implementation
 
 uses
-  System.IniFiles, System.SysUtils;
+  System.IniFiles, System.Math, System.SysUtils;
 
 const
   PLUGIN_DISPLAY_NAME   = '動画IN';           // 設定ダイアログに表示するプラグイン名
   SETTINGS_SECTION      = 'VW_Media_Input';   // iniファイル内の設定セクション名
   SETTINGS_DECODER_MODE = 'VideoDecoderMode'; // 映像デコード方式を保存するキー名
+  SETTINGS_CACHE_SIZE_MB = 'VideoFrameCacheMB'; // 共有映像フレームキャッシュの上限MB
+  DEFAULT_CACHE_SIZE_MB  = 1024;                // 設定未指定時のキャッシュ上限MB
+  MAX_CACHE_SIZE_MB      = 4096;                // 設定で許可するキャッシュ上限MB
 
   IDC_MODE_AUTO     = 1001;     // 自動選択radio buttonのcontrol ID
   IDC_MODE_QSV      = 1002;     // QSV固定radio buttonのcontrol ID
@@ -30,6 +34,7 @@ const
 
 var
   CurrentVideoDecoderMode: TVideoDecoderMode = vdmAuto;
+  CurrentVideoFrameCacheSizeMb: Integer = DEFAULT_CACHE_SIZE_MB;
   SettingsLoaded: Boolean = False;
 
 function SettingsFileName: string;
@@ -123,6 +128,9 @@ begin
   try
     CurrentVideoDecoderMode := TextToVideoDecoderMode(
       Ini.ReadString(SETTINGS_SECTION, SETTINGS_DECODER_MODE, 'auto'));
+    CurrentVideoFrameCacheSizeMb := EnsureRange(
+      Ini.ReadInteger(SETTINGS_SECTION, SETTINGS_CACHE_SIZE_MB, DEFAULT_CACHE_SIZE_MB),
+      0, MAX_CACHE_SIZE_MB);
   finally
     Ini.Free;
   end;
@@ -145,6 +153,13 @@ function GetVideoDecoderMode: TVideoDecoderMode;
 begin
   LoadSettings;
   Result := CurrentVideoDecoderMode;
+end;
+
+// 共有映像フレームキャッシュの上限MBを返す。
+function GetVideoFrameCacheSizeMb: Integer;
+begin
+  LoadSettings;
+  Result := CurrentVideoFrameCacheSizeMb;
 end;
 
 type

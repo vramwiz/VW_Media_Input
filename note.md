@@ -1169,6 +1169,95 @@ read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=413.718 frame_bu
 - AviUtl2 上で背景を敷いて、透過部分が黒塗りではなく抜けて見えるか確認する。
 - もし alpha が落ちる場合は、AviUtl2 が `BI_RGB 32bit` を alpha 付きとして扱っていない可能性があるため、次は `PA64` 入力返却への切り替えを検討する。
 
+## 2026-08-09 重いMP4調査用Debugログ
+
+特定のMP4だけ読み込み負荷が大きい原因を切り分けるため、Debugビルドのログを段階別に強化した。
+
+追加した計測:
+
+- ファイルopen
+  - `api_load_ms`: FFmpeg DLLロード
+  - `format_open_ms`: コンテナopen
+  - `stream_info_ms`: ストリーム解析
+  - `video_decoder_ms`: QSV/ソフトウェア映像デコーダ初期化
+  - `audio_decoder_ms`: 音声デコーダ初期化
+  - `audio_reader_open_ms`: AviUtl2音声読み取り専用デコーダの追加open
+- 映像フレーム
+  - `seek_ms`: `av_seek_frame`
+  - `read_ms`: `av_read_frame`の累計
+  - `decode_ms`: packet送信とframe受信
+  - `transfer_ms`: QSV HW frameからCPUへの転送
+  - `convert_ms`: YUY2/BGRx32への色変換
+  - 16ms以上では最大の段階を`stage="seek|read|decode|transfer|convert|total"`として記録
+- 音声
+  - `decoded_before` / `decoded_after` / `decoded_added`: PCM追加デコード量
+  - `pcm_bytes`: PCMキャッシュの使用バイト数
+  - `cache_hit` / `finished` / `elapsed_ms` / `slow`
+
+ログファイル:
+
+```text
+%TEMP%\VW_Media_Input_decode.log
+```
+
+主に確認する行:
+
+- `open_summary`
+- `open ok`
+- `next_decode_yuy2_slow` / `seek_decode_yuy2_slow`
+- `next_decode_slow` / `seek_decode_slow`
+- `read_audio` / `read_audio_failed`
+- `read_video_slow`
+- `close_summary`
+
+音声は要求位置まで先頭からPCMキャッシュを伸ばすため、長いMP4の途中を最初に要求した場合は
+`decoded_added`、`pcm_bytes`、`elapsed_ms`が大きくなる可能性がある。
+
+ビルド確認:
+
+- Win64 Debug Build成功。警告1、エラー0。
+- Win64 Release Build成功。警告1、エラー0。
+- 最後にDebug版を再ビルドし、AviUtl2プラグインフォルダへ配置済み。
+
+## 2026-08-09 2回目再生用のファイル別フレームキャッシュ
+
+途中位置から2回目の再生を始めると、各MP4が`last_decoded=-1`の状態で途中フレームを要求され、
+長いGOPを先頭側から再デコードしていた。従来の共有キャッシュは全素材合計16枚だけだったため、
+1回目にAviUtl2へ返した正確なフレームが素材切り替えでほぼ消えていた。
+
+変更内容:
+
+- 共有16枚LRUを、ファイル別枚数を管理する可変キャッシュへ変更した。
+- 1ファイルあたり最大64フレームを保持する。
+- キャッシュ全体は既定1024MBまでとする。
+- 全体上限へ達した場合は、最も多くフレームを持つファイルから古いフレームを破棄する。
+  - 一つの素材が全キャッシュを独占せず、複数MP4のフレームを残すための方針。
+- キャッシュにはAviUtl2へ実際に返した完成済みバッファを保存する。
+  - 近似シークではなく、frame番号が完全一致した場合だけ`route=shared_cache`で返す。
+  - キャッシュヒット時もデコーダ位置を偽って更新しない。
+- Debugの`close_summary`へ以下を追加した。
+  - `cache_file_frames`: 対象ファイルの保持枚数
+  - `cache_total_mb`: 全ファイル合計の使用量
+  - `cache_limit_mb`: 設定上限
+
+キャッシュ上限は`.aui2`と同じ場所の`VW_Media_Input.ini`で手動変更できる。
+
+```ini
+[VW_Media_Input]
+VideoFrameCacheMB=1024
+```
+
+- `0`: 共有フレームキャッシュを無効化
+- 最大: `4096`MB
+- 設定画面UIへの項目追加は未実施。
+
+ビルド確認:
+
+- Win64 Debug / ReleaseともBuild成功。警告1、エラー0。
+- 最後にDebug版を再ビルドし、AviUtl2プラグインフォルダへ配置済み。
+- 次の実機確認では1回目再生後の2回目途中再生で、`route=shared_cache`と
+  close時キャッシュ統計を確認する。
+
 ## コメント記述ルール
 
 基本方針:

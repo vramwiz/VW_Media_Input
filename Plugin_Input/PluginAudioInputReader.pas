@@ -13,13 +13,14 @@ type
   // AviUtl2の音声読み取り要求に合わせてPCMキャッシュを管理するクラス。
   TPluginAudioInputReader = class
   private
-    FDecoder               : TFFmpegDecoder; // 音声読み取り専用に開くFFmpegデコーダ
-    FFormat                : WAVEFORMATEX; // AviUtl2へ返すPCM形式
-    FPcm                   : TBytes;       // デコード済みPCMキャッシュ
-    FSampleCount           : Integer;      // 音声全体の想定サンプル数
-    FDecodedSamples        : Integer;      // PCMキャッシュへデコード済みのサンプル数
-    FDecodeFinished        : Boolean;      // FFmpeg側の音声読み取りが終端に達したか
-    FLastError             : string;       // 直近の音声読み取りエラー
+    FDecoder        : TFFmpegDecoder; // 音声読み取り専用に開くFFmpegデコーダ
+    FFileName       : string;          // ログで識別する入力ファイル名
+    FFormat         : WAVEFORMATEX;    // AviUtl2へ返すPCM形式
+    FPcm            : TBytes;          // デコード済みPCMキャッシュ
+    FSampleCount    : Integer;         // 音声全体の想定サンプル数
+    FDecodedSamples : Integer;         // PCMキャッシュへデコード済みのサンプル数
+    FDecodeFinished : Boolean;         // FFmpeg側の音声読み取りが終端に達したか
+    FLastError      : string;          // 直近の音声読み取りエラー
 
     // WAVEFORMATEXのポインタをAviUtl2用に返す。
     function GetFormatPtr : PWAVEFORMATEX;
@@ -41,6 +42,43 @@ type
   end;
 
 implementation
+
+uses
+  System.Diagnostics;
+
+const
+{$IFDEF DEBUG}
+  DECODE_TRACE_ENABLED = True;  // Debug時だけ音声読み取り負荷をログへ出す
+  AUDIO_SLOW_MS        = 16.0;  // 音声読み取りを遅いとみなすしきい値
+{$ELSE}
+  DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成を避ける
+{$ENDIF}
+
+// Debug時のデコードログをTEMPへ追記する。
+procedure DecodeTrace(const Msg: string);
+var
+  F: TextFile;
+  LogFileName: string;
+  Line: string;
+begin
+  if not DECODE_TRACE_ENABLED then
+    Exit;
+
+  Line := FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now) + ' [PluginAudioInputReader] ' + Msg;
+  OutputDebugString(PChar(Line));
+  LogFileName := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) +
+    'VW_Media_Input_decode.log';
+  AssignFile(F, LogFileName);
+  try
+    if FileExists(LogFileName) then
+      Append(F)
+    else
+      Rewrite(F);
+    Writeln(F, Line);
+  finally
+    CloseFile(F);
+  end;
+end;
 
 // WAVEFORMATEXのポインタをAviUtl2用に返す。
 function TPluginAudioInputReader.GetFormatPtr: PWAVEFORMATEX;
@@ -72,6 +110,7 @@ begin
   Result := False;
   ErrorMessage := '';
   FLastError := '';
+  FFileName := FileName;
 
   if (not VideoInfo.Audio.Present) or (VideoInfo.Audio.OpenError <> '') then
   begin
@@ -112,10 +151,24 @@ var
   SamplesToCopy    : Integer; // 実際にコピーするサンプル数
   SourceOffset     : Integer; // PCMキャッシュ内のコピー開始バイト位置
   BytesToCopy      : Integer; // 実際にコピーするバイト数
+{$IFDEF DEBUG}
+  Stopwatch        : TStopwatch; // 音声要求全体の所要時間
+  RequestedStart   : Integer;    // AviUtl2から渡された元の開始サンプル位置
+  DecodedBefore    : Integer;    // 要求処理前のデコード済みサンプル数
+  ElapsedMs        : Double;     // 音声要求全体の所要時間
+  NeededDecode     : Boolean;    // PCMキャッシュ追加デコードが必要だったか
+{$ENDIF}
 begin
   Result := 0;
   if (Buffer = nil) or (SampleLength <= 0) or (FDecoder = nil) or (FSampleCount <= 0) then
     Exit;
+
+{$IFDEF DEBUG}
+  RequestedStart := Start;
+  DecodedBefore := FDecodedSamples;
+  if DECODE_TRACE_ENABLED then
+    Stopwatch := TStopwatch.StartNew;
+{$ENDIF}
 
   if Start < 0 then
     Start := 0;
@@ -124,11 +177,27 @@ begin
 
   AvailableSamples := FSampleCount - Start;
   SamplesToCopy := Min(SampleLength, AvailableSamples);
+{$IFDEF DEBUG}
+  NeededDecode := (not FDecodeFinished) and (FDecodedSamples < Start + SamplesToCopy);
+{$ENDIF}
   if (not FDecodeFinished) and (FDecodedSamples < Start + SamplesToCopy) then
   begin
     if not FDecoder.DecodeAudioPcm16Stereo48kUntil(Start + SamplesToCopy, FPcm,
       FDecodedSamples, FDecodeFinished, FLastError) then
+    begin
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        Stopwatch.Stop;
+        DecodeTrace(System.SysUtils.Format(
+          'read_audio_failed file="%s" start=%d length=%d decoded_before=%d ' +
+          'decoded_after=%d pcm_bytes=%d elapsed_ms=%.3f err="%s"',
+          [FFileName, RequestedStart, SampleLength, DecodedBefore, FDecodedSamples,
+           Length(FPcm), Stopwatch.Elapsed.TotalMilliseconds, FLastError]));
+      end;
+{$ENDIF}
       Exit;
+    end;
     if FDecodeFinished and (FDecodedSamples < FSampleCount) then
       FSampleCount := FDecodedSamples;
   end;
@@ -144,6 +213,22 @@ begin
     Move(FPcm[SourceOffset], Buffer^, BytesToCopy);
 
   Result := SamplesToCopy;
+{$IFDEF DEBUG}
+  if DECODE_TRACE_ENABLED then
+  begin
+    Stopwatch.Stop;
+    ElapsedMs := Stopwatch.Elapsed.TotalMilliseconds;
+    DecodeTrace(System.SysUtils.Format(
+      'read_audio file="%s" start=%d length=%d result=%d cache_hit=%s ' +
+      'decoded_before=%d decoded_after=%d decoded_added=%d pcm_bytes=%d ' +
+      'finished=%s elapsed_ms=%.3f slow=%s',
+      [FFileName, RequestedStart, SampleLength, Result,
+       BoolToStr(not NeededDecode, True), DecodedBefore,
+       FDecodedSamples, FDecodedSamples - DecodedBefore, Length(FPcm),
+       BoolToStr(FDecodeFinished, True), ElapsedMs,
+       BoolToStr(ElapsedMs >= AUDIO_SLOW_MS, True)]));
+  end;
+{$ENDIF}
 end;
 
 end.

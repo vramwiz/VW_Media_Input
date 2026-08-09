@@ -26,6 +26,8 @@ uses
 const
 {$IFDEF DEBUG}
   DECODE_TRACE_ENABLED = True;  // Debug時だけデコードログを出す
+  BGRX_SLOW_TOTAL_MS   = 16.0;  // 1frame処理全体を遅いとみなすしきい値
+  BGRX_SLOW_STAGE_MS   = 8.0;   // 個別stageを遅いとみなすしきい値
 {$ELSE}
   DECODE_TRACE_ENABLED = False; // Releaseではログ文字列生成を避ける
 {$ENDIF}
@@ -55,6 +57,37 @@ begin
   end;
 end;
 
+{$IFDEF DEBUG}
+function DetectSlowStage(TotalMs, ReadMs, DecodeMs, TransferMs, ConvertMs: Double): string;
+var
+  MaxStageMs: Double;
+begin
+  Result := '';
+  if TotalMs < BGRX_SLOW_TOTAL_MS then
+    Exit;
+
+  Result := 'total';
+  MaxStageMs := BGRX_SLOW_STAGE_MS;
+  if ReadMs >= MaxStageMs then
+  begin
+    Result := 'read';
+    MaxStageMs := ReadMs;
+  end;
+  if DecodeMs >= MaxStageMs then
+  begin
+    Result := 'decode';
+    MaxStageMs := DecodeMs;
+  end;
+  if TransferMs >= MaxStageMs then
+  begin
+    Result := 'transfer';
+    MaxStageMs := TransferMs;
+  end;
+  if ConvertMs >= MaxStageMs then
+    Result := 'convert';
+end;
+{$ENDIF}
+
 function DecodeNextFrameToBgrx32Optional(
   Context: TFFmpegDecoderContext;
   Buffer: Pointer;
@@ -73,15 +106,18 @@ var
   Ret: Integer;
 {$IFDEF DEBUG}
   DecodeStopwatch: TStopwatch;
+  ReadStopwatch: TStopwatch;
   TransferStopwatch: TStopwatch;
   ConvertStopwatch: TStopwatch;
   TotalStopwatch: TStopwatch;
   DecodeElapsedMs: Double;
+  ReadElapsedMs: Double;
   TransferElapsedMs: Double;
   ConvertElapsedMs: Double;
   ReadPacketCount: Integer;
   VideoPacketCount: Integer;
   DecodedFrameCount: Integer;
+  SlowStage: string;
 {$ENDIF}
   DidTransfer: Boolean;
   TransferErrorMessage: string;
@@ -131,22 +167,37 @@ var
       FFmpegDecodeStats.UpdateVideoStageStats(Context.DecodeStats,
         TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs, TransferElapsedMs,
         ConvertElapsedMs);
+      SlowStage := DetectSlowStage(TotalStopwatch.Elapsed.TotalMilliseconds,
+        ReadElapsedMs, DecodeElapsedMs, TransferElapsedMs, ConvertElapsedMs);
     end;
 {$ENDIF}
     PositionMs := StreamTimestampToMs(Stream, Frame.pts);
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
+    begin
       DecodeTrace(Format(
         'next_decode file="%s" decoder="%s" qsv=%s convert=%s source=%s ' +
         'pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d ' +
-        'decoded_frames=%d src_fmt=%d dst_fmt=%d elapsed_ms=%.3f ' +
-        'decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
+        'decoded_frames=%d src_fmt=%d dst_fmt=%d slow_stage="%s" elapsed_ms=%.3f ' +
+        'read_ms=%.3f decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f',
         [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True),
          BoolToStr(ConvertFrame, True), SourceName, PositionMs, Frame.pts,
          ReadPacketCount, VideoPacketCount, DecodedFrameCount,
-         Context.DirectSwsSrcFormat, Context.DirectSwsDstFormat,
-         TotalStopwatch.Elapsed.TotalMilliseconds, DecodeElapsedMs,
+         Context.DirectSwsSrcFormat, Context.DirectSwsDstFormat, SlowStage,
+         TotalStopwatch.Elapsed.TotalMilliseconds, ReadElapsedMs, DecodeElapsedMs,
          TransferElapsedMs, ConvertElapsedMs]));
+      if SlowStage <> '' then
+        DecodeTrace(Format(
+          'next_decode_slow file="%s" decoder="%s" qsv=%s stage="%s" ' +
+          'convert=%s source=%s pos_ms=%d elapsed_ms=%.3f read_ms=%.3f ' +
+          'decode_ms=%.3f transfer_ms=%.3f convert_ms=%.3f read_packets=%d ' +
+          'video_packets=%d decoded_frames=%d',
+          [Context.FileName, Context.VideoDecoderName, BoolToStr(Context.VideoUsesQsv, True),
+           SlowStage, BoolToStr(ConvertFrame, True), SourceName, PositionMs,
+           TotalStopwatch.Elapsed.TotalMilliseconds, ReadElapsedMs, DecodeElapsedMs,
+           TransferElapsedMs, ConvertElapsedMs, ReadPacketCount, VideoPacketCount,
+           DecodedFrameCount]));
+    end;
 {$ENDIF}
     Result := True;
   end;
@@ -181,9 +232,11 @@ begin
       ReadPacketCount := 0;
       VideoPacketCount := 0;
       DecodedFrameCount := 0;
+      ReadElapsedMs := 0;
       DecodeElapsedMs := 0;
       TransferElapsedMs := 0;
       ConvertElapsedMs := 0;
+      SlowStage := '';
     end;
 {$ENDIF}
 {$IFDEF DEBUG}
@@ -207,8 +260,22 @@ begin
       Exit;
     end;
 
-    while TFFmpegApi.av_read_frame(FormatContext, Packet) >= 0 do
+    while True do
     begin
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        ReadStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+      Ret := TFFmpegApi.av_read_frame(FormatContext, Packet);
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        ReadStopwatch.Stop;
+        ReadElapsedMs := ReadElapsedMs + ReadStopwatch.Elapsed.TotalMilliseconds;
+      end;
+{$ENDIF}
+      if Ret < 0 then
+        Break;
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
         Inc(ReadPacketCount);
@@ -276,9 +343,9 @@ begin
     if DECODE_TRACE_ENABLED then
       DecodeTrace(Format(
         'next_decode_failed file="%s" convert=%s read_packets=%d ' +
-        'video_packets=%d decoded_frames=%d elapsed_ms=%.3f',
+        'video_packets=%d decoded_frames=%d elapsed_ms=%.3f read_ms=%.3f decode_ms=%.3f',
         [Context.FileName, BoolToStr(ConvertFrame, True), ReadPacketCount, VideoPacketCount, DecodedFrameCount,
-         TotalStopwatch.Elapsed.TotalMilliseconds]));
+         TotalStopwatch.Elapsed.TotalMilliseconds, ReadElapsedMs, DecodeElapsedMs]));
 {$ENDIF}
     ErrorMessage := 'End of stream.';
   except
