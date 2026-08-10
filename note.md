@@ -1165,6 +1165,27 @@ read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=413.718 frame_bu
   - 各ファイルで先頭4,800サンプルのPCM読み取りに成功し、closeも成功した。
   - ログ上は `width=0 height=0 frames=0 audio=True audio_err=""` となり、`qsv_required_failed` は発生しない。
 
+### MP4初回デコード負荷向け永続正確フレームキャッシュ（2026-08-10）
+
+- QSV遅延初期化と最初のseekで各MP4の最初の `read_video` に約0.5～0.7秒かかるため、AviUtl2へ一度返した正確な映像バッファをディスクへ永続化する。
+- `Plugin_Input\PersistentFrameCache.pas` を追加した。
+  - 保存先は `%LOCALAPPDATA%\VW_Media_Input\FrameCache`。
+  - 保存は最大128フレームの専用キューとバックグラウンドスレッドで行い、安定している初回再生のデコードスレッドをディスク書き込みで止めない。
+  - ディスク上限は既存 `VideoFrameCacheMB` の4倍とし、現在の既定1,024MB設定では4GB。最終利用時刻によるLRUで古いファイルを削除する。
+- キャッシュ一致条件:
+  - 正規化した絶対パス。
+  - 元ファイルサイズとWindowsの最終更新時刻。
+  - フレーム番号、幅、高さ、AviUtl2出力形式、映像バッファサイズ。
+  - キャッシュ形式versionと保存データの64bitハッシュ。
+- ファイルサイズまたは更新時刻が変われば別キーになり、古いフレームは使用しない。
+- 既存のメモリフレームキャッシュとメタデータキャッシュにもサイズ・更新時刻の一致判定を追加した。
+- `VideoFrameCacheMB=0` の場合は永続キャッシュの読み書きも無効にする。
+- 独立プロセスによる `やってくる.mp4` の確認:
+  - frame 0は通常QSVデコード約540.8ms、別プロセスの永続キャッシュ約11.1ms。
+  - frame 1は通常QSVデコード約475.9ms、別プロセスの永続キャッシュ約10.0ms。
+  - frame 1の通常デコード結果とキャッシュ結果はSHA-256が完全一致した。
+  - Debugログは `route=persistent_cache` となり、キャッシュhit時はQSV decoderをopenしない。
+
 ## 2026-06-17 ProRes 4444 alpha 入力の初期対応
 
 背景:

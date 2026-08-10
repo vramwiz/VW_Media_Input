@@ -149,6 +149,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <DCCReference Include="Plugin_Input\FFmpegQsvDecode.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegStreamInfo.pas"/>
         <DCCReference Include="Plugin_Input\FFmpegDecoder.pas"/>
+        <DCCReference Include="Plugin_Input\PersistentFrameCache.pas"/>
         <DCCReference Include="Plugin_Input\PluginAudioInputReader.pas"/>
         <DCCReference Include="Plugin_Input\PluginInputSettings.pas"/>
         <BuildConfiguration Include="Base">
@@ -1188,7 +1189,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <PreBuildEventIgnoreExitCode>False</PreBuildEventIgnoreExitCode>
         <PreLinkEvent/>
         <PreLinkEventIgnoreExitCode>False</PreLinkEventIgnoreExitCode>
-        <PostBuildEvent><![CDATA[copy /Y "$(OUTPUTDIR)$(PROJECTNAME).dll" "$(OUTPUTDIR)$(PROJECTNAME).aui2"]]></PostBuildEvent>
+        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;</PostBuildEvent>
         <PostBuildEventIgnoreExitCode>False</PostBuildEventIgnoreExitCode>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Release' And '$(Platform)'=='Win64'">
@@ -1196,7 +1197,7 @@ if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm
         <PreBuildEventIgnoreExitCode>False</PreBuildEventIgnoreExitCode>
         <PreLinkEvent/>
         <PreLinkEventIgnoreExitCode>False</PreLinkEventIgnoreExitCode>
-        <PostBuildEvent><![CDATA[copy /Y "$(OUTPUTDIR)$(PROJECTNAME).dll" "$(OUTPUTDIR)$(PROJECTNAME).aui2"&&if exist "$(OUTPUTDIR)$(PROJECTNAME).dll" del /Q "$(OUTPUTDIR)$(PROJECTNAME).dll"&&if exist "$(OUTPUTDIR)$(PROJECTNAME).rsm" del /Q "$(OUTPUTDIR)$(PROJECTNAME).rsm"]]></PostBuildEvent>
+        <PostBuildEvent>copy /Y &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; &quot;$(OUTPUTDIR)$(PROJECTNAME).aui2&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).dll&quot;&amp;&amp;if exist &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot; del /Q &quot;$(OUTPUTDIR)$(PROJECTNAME).rsm&quot;</PostBuildEvent>
         <PostBuildEventIgnoreExitCode>False</PostBuildEventIgnoreExitCode>
     </PropertyGroup>
 </Project>

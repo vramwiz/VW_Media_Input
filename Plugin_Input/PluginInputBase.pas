@@ -26,7 +26,7 @@ implementation
 uses
   System.Diagnostics, System.Generics.Collections, System.Math, System.SyncObjs,
   FFmpegDecoderTypes, FFmpegDecoder,
-  PluginAudioInputReader, PluginInputSettings;
+  PersistentFrameCache, PluginAudioInputReader, PluginInputSettings;
 
 const
   MAX_FORWARD_DECODE_GAP      = 32;                // 小さい前方ジャンプだけ順方向decodeで追う最大frame数
@@ -70,6 +70,7 @@ type
     VideoOutputFormat : Integer;                 // ファイルごとに選択したAviUtl2向け映像形式
     Info              : BITMAPINFOHEADER;        // AviUtl2へ返す映像フォーマット
     AudioInput        : TPluginAudioInputReader; // 音声読み取り用の入力リーダー
+    PersistentIdentity : TPersistentFrameIdentity; // 更新日時とサイズを含む永続キャッシュ同一性
     LastDecodedFrame  : Integer;                 // キャッシュしている直近のフレーム番号
     CachedFrame       : TBytes;                  // 直近フレームのBGRx32キャッシュ
     LastError         : string;                  // 直近のデコード/音声openエラー
@@ -84,12 +85,20 @@ type
   end;
 
   TSharedFrameCacheEntry = record
-    FileName  : string;  // キャッシュ元ファイル名
-    FileKey   : string;  // 大文字小文字を無視した比較用ファイル名
-    Frame     : Integer; // キャッシュしたフレーム番号
-    ImageSize : Integer; // キャッシュした映像バッファサイズ
-    Data      : TBytes;  // AviUtl2へ返した映像データ
-    LastUsed  : UInt64;  // LRU判定用の利用順カウンタ
+    FileName      : string;  // キャッシュ元ファイル名
+    FileKey       : string;  // 大文字小文字を無視した比較用ファイル名
+    FileSize      : Int64;   // キャッシュ作成時の入力ファイルサイズ
+    LastWriteTime : Int64;   // キャッシュ作成時の入力ファイル最終更新時刻
+    Frame         : Integer; // キャッシュしたフレーム番号
+    ImageSize     : Integer; // キャッシュした映像バッファサイズ
+    Data          : TBytes;  // AviUtl2へ返した映像データ
+    LastUsed      : UInt64;  // LRU判定用の利用順カウンタ
+  end;
+
+  TVideoInfoCacheEntry = record
+    FileSize      : Int64;      // メタデータ取得時の入力ファイルサイズ
+    LastWriteTime : Int64;      // メタデータ取得時の入力ファイル最終更新時刻
+    Info          : TVideoInfo; // QSVを開かずに取得した入力メタデータ
   end;
 
 var
@@ -97,7 +106,7 @@ var
   SharedFrameCacheClock   : UInt64;                       // 共有キャッシュのLRU順序カウンタ
   SharedFrameCacheBytes   : Int64;                        // 現在保持している映像データの合計byte数
   SharedFrameCacheCounts  : TDictionary<string, Integer>; // 正規化ファイル名ごとの保持フレーム数
-  VideoInfoCache          : TDictionary<string, TVideoInfo>; // QSVを含まないファイル別メタデータ
+  VideoInfoCache          : TDictionary<string, TVideoInfoCacheEntry>; // 同一性を検証するファイル別メタデータ
   SharedFrameCacheLock    : TCriticalSection;             // 共有キャッシュ保護用ロック
   ReusableDecoder         : TFFmpegDecoder;   // close直後に次openへ引き渡すデコーダ
   ReusableDecoderFileName : string;           // 再利用デコーダが開いているファイル名
@@ -113,40 +122,48 @@ begin
   Result := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) + 'VW_Media_Input_decode.log';
 end;
 
-// キャッシュ比較用にファイル名の大文字小文字を正規化する。
-function FrameCacheFileKey(const FileName: string): string;
-begin
-  Result := LowerCase(FileName);
-end;
-
 // QSVを開かずに取得したファイル情報を共有キャッシュから読む。
-function TryReadVideoInfoCache(const FileName: string; out Info: TVideoInfo): Boolean;
+function TryReadVideoInfoCache(const Identity: TPersistentFrameIdentity;
+  out Info: TVideoInfo): Boolean;
+var
+  Entry: TVideoInfoCacheEntry;
 begin
   Result := False;
-  if (SharedFrameCacheLock = nil) or (VideoInfoCache = nil) then
+  if (Identity.NormalizedPath = '') or (SharedFrameCacheLock = nil) or
+    (VideoInfoCache = nil) then
     Exit;
   SharedFrameCacheLock.Enter;
   try
-    Result := VideoInfoCache.TryGetValue(FrameCacheFileKey(FileName), Info);
+    Result := VideoInfoCache.TryGetValue(Identity.NormalizedPath, Entry) and
+      (Entry.FileSize = Identity.FileSize) and
+      (Entry.LastWriteTime = Identity.LastWriteTime);
+    if Result then
+      Info := Entry.Info;
   finally
     SharedFrameCacheLock.Leave;
   end;
 end;
 
 // 軽量probeで取得したファイル情報を件数制限付きで保存する。
-procedure SaveVideoInfoCache(const FileName: string; const Info: TVideoInfo);
+procedure SaveVideoInfoCache(const Identity: TPersistentFrameIdentity;
+  const Info: TVideoInfo);
 var
   FileKey: string;
+  Entry: TVideoInfoCacheEntry;
 begin
-  if (SharedFrameCacheLock = nil) or (VideoInfoCache = nil) then
+  if (Identity.NormalizedPath = '') or (SharedFrameCacheLock = nil) or
+    (VideoInfoCache = nil) then
     Exit;
   SharedFrameCacheLock.Enter;
   try
-    FileKey := FrameCacheFileKey(FileName);
+    FileKey := Identity.NormalizedPath;
     if (VideoInfoCache.Count >= VIDEO_INFO_CACHE_LIMIT) and
        not VideoInfoCache.ContainsKey(FileKey) then
       VideoInfoCache.Clear;
-    VideoInfoCache.AddOrSetValue(FileKey, Info);
+    Entry.FileSize := Identity.FileSize;
+    Entry.LastWriteTime := Identity.LastWriteTime;
+    Entry.Info := Info;
+    VideoInfoCache.AddOrSetValue(FileKey, Entry);
   finally
     SharedFrameCacheLock.Leave;
   end;
@@ -186,6 +203,8 @@ begin
   SharedFrameCache[Index].Data := nil;
   SharedFrameCache[Index].FileName := '';
   SharedFrameCache[Index].FileKey := '';
+  SharedFrameCache[Index].FileSize := 0;
+  SharedFrameCache[Index].LastWriteTime := 0;
   SharedFrameCache[Index].Frame := -1;
   SharedFrameCache[Index].ImageSize := 0;
   SharedFrameCache[Index].LastUsed := 0;
@@ -320,21 +339,24 @@ begin
 end;
 
 // 複数open間で共有するフレームキャッシュから指定フレームを取り出す。
-function TryReadSharedFrameCache(const FileName: string; Frame, ImageSize: Integer;
-  Buffer: Pointer): Boolean;
+function TryReadSharedFrameCache(const Identity: TPersistentFrameIdentity;
+  Frame, ImageSize: Integer; Buffer: Pointer): Boolean;
 var
   I: Integer;
   FileKey: string;
 begin
   Result := False;
-  if (SharedFrameCacheLock = nil) or (Buffer = nil) or (ImageSize <= 0) then
+  if (Identity.NormalizedPath = '') or (SharedFrameCacheLock = nil) or
+    (Buffer = nil) or (ImageSize <= 0) then
     Exit;
 
   SharedFrameCacheLock.Enter;
   try
-    FileKey := FrameCacheFileKey(FileName);
+    FileKey := Identity.NormalizedPath;
     for I := Low(SharedFrameCache) to High(SharedFrameCache) do
       if (SharedFrameCache[I].FileKey = FileKey) and
+        (SharedFrameCache[I].FileSize = Identity.FileSize) and
+        (SharedFrameCache[I].LastWriteTime = Identity.LastWriteTime) and
         (SharedFrameCache[I].Frame = Frame) and
         (SharedFrameCache[I].ImageSize = ImageSize) and
         (Length(SharedFrameCache[I].Data) = ImageSize) then
@@ -351,8 +373,8 @@ begin
 end;
 
 // AviUtl2へ返したフレームを共有キャッシュへ保存する。
-procedure SaveSharedFrameCache(const FileName: string; Frame, ImageSize: Integer;
-  Buffer: Pointer);
+procedure SaveSharedFrameCache(const Identity: TPersistentFrameIdentity;
+  Frame, ImageSize: Integer; Buffer: Pointer);
 var
   I: Integer;
   Slot: Integer;
@@ -360,7 +382,8 @@ var
   FileCount: Integer;
   MaxBytes: Int64;
 begin
-  if (SharedFrameCacheLock = nil) or (Buffer = nil) or (ImageSize <= 0) then
+  if (Identity.NormalizedPath = '') or (SharedFrameCacheLock = nil) or
+    (Buffer = nil) or (ImageSize <= 0) then
     Exit;
 
   SharedFrameCacheLock.Enter;
@@ -369,10 +392,12 @@ begin
     if (MaxBytes <= 0) or (ImageSize > MaxBytes) then
       Exit;
 
-    FileKey := FrameCacheFileKey(FileName);
+    FileKey := Identity.NormalizedPath;
     Slot := -1;
     for I := Low(SharedFrameCache) to High(SharedFrameCache) do
       if (SharedFrameCache[I].FileKey = FileKey) and
+        (SharedFrameCache[I].FileSize = Identity.FileSize) and
+        (SharedFrameCache[I].LastWriteTime = Identity.LastWriteTime) and
         (SharedFrameCache[I].Frame = Frame) and
         (SharedFrameCache[I].ImageSize = ImageSize) then
       begin
@@ -417,8 +442,10 @@ begin
 
     SetLength(SharedFrameCache[Slot].Data, ImageSize);
     Move(Buffer^, SharedFrameCache[Slot].Data[0], ImageSize);
-    SharedFrameCache[Slot].FileName := FileName;
+    SharedFrameCache[Slot].FileName := Identity.NormalizedPath;
     SharedFrameCache[Slot].FileKey := FileKey;
+    SharedFrameCache[Slot].FileSize := Identity.FileSize;
+    SharedFrameCache[Slot].LastWriteTime := Identity.LastWriteTime;
     SharedFrameCache[Slot].Frame := Frame;
     SharedFrameCache[Slot].ImageSize := ImageSize;
     Inc(SharedFrameCacheClock);
@@ -432,8 +459,8 @@ begin
 end;
 
 // Debug集計用に指定ファイルの保持枚数とキャッシュ全体の使用byte数を返す。
-procedure GetSharedFrameCacheStats(const FileName: string; out FileFrames: Integer;
-  out TotalBytes: Int64);
+procedure GetSharedFrameCacheStats(const Identity: TPersistentFrameIdentity;
+  out FileFrames: Integer; out TotalBytes: Int64);
 begin
   FileFrames := 0;
   TotalBytes := 0;
@@ -442,7 +469,7 @@ begin
 
   SharedFrameCacheLock.Enter;
   try
-    FileFrames := SharedFrameCacheFileCount(FrameCacheFileKey(FileName));
+    FileFrames := SharedFrameCacheFileCount(Identity.NormalizedPath);
     TotalBytes := SharedFrameCacheBytes;
   finally
     SharedFrameCacheLock.Leave;
@@ -630,6 +657,7 @@ begin
 
   try
     Ctx^.FileName := string(fileName);
+    BuildPersistentFrameIdentity(Ctx^.FileName, Ctx^.PersistentIdentity);
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
       ClearDecodeTraceLog(Format('file="%s"', [Ctx^.FileName]));
@@ -641,7 +669,7 @@ begin
     if DECODE_TRACE_ENABLED then
       StageStopwatch := TStopwatch.StartNew;
 {$ENDIF}
-    if TryReadVideoInfoCache(Ctx^.FileName, VideoInfo) then
+    if TryReadVideoInfoCache(Ctx^.PersistentIdentity, VideoInfo) then
     begin
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
@@ -668,7 +696,7 @@ begin
         FreeFileContext(Ctx);
         Exit;
       end;
-      SaveVideoInfoCache(Ctx^.FileName, VideoInfo);
+      SaveVideoInfoCache(Ctx^.PersistentIdentity, VideoInfo);
     end;
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
@@ -808,7 +836,7 @@ begin
   if DECODE_TRACE_ENABLED and (Ctx^.Decoder <> nil) then
   begin
     Stats := Ctx^.Decoder.DecodeStats;
-    GetSharedFrameCacheStats(Ctx^.FileName, CacheFileFrames, CacheTotalBytes);
+    GetSharedFrameCacheStats(Ctx^.PersistentIdentity, CacheFileFrames, CacheTotalBytes);
     DecodeTrace(Format('close_summary file="%s" read_video_calls=%d ' +
       'read_video_slow=%d read_video_avg_ms=%.3f read_video_max_ms=%.3f ' +
       'decoder_video_frames=%d decoder_avg_ms=%.3f decoder_max_ms=%.3f ' +
@@ -925,12 +953,28 @@ begin
     Exit;
   end;
 
-  if TryReadSharedFrameCache(Ctx^.FileName, frame, ImageSize, buf) then
+  if TryReadSharedFrameCache(Ctx^.PersistentIdentity, frame, ImageSize, buf) then
   begin
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
       DecodeTrace(Format('read_video file="%s" frame=%d last=%d gap=%d route=shared_cache bytes=%d',
         [Ctx^.FileName, frame, Ctx^.LastDecodedFrame, frame - Ctx^.LastDecodedFrame, ImageSize]));
+{$ENDIF}
+    Result := ImageSize;
+    Exit;
+  end;
+
+  if (GetVideoFrameCacheSizeMb > 0) and
+    TryReadPersistentFrame(Ctx^.PersistentIdentity, frame, Ctx^.Width,
+    Ctx^.Height, Ctx^.VideoOutputFormat, ImageSize, buf) then
+  begin
+    SaveSharedFrameCache(Ctx^.PersistentIdentity, frame, ImageSize, buf);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      DecodeTrace(Format(
+        'read_video file="%s" frame=%d last=%d gap=%d route=persistent_cache bytes=%d',
+        [Ctx^.FileName, frame, Ctx^.LastDecodedFrame,
+         frame - Ctx^.LastDecodedFrame, ImageSize]));
 {$ENDIF}
     Result := ImageSize;
     Exit;
@@ -1071,7 +1115,9 @@ begin
     Exit;
   end;
 
-  SaveSharedFrameCache(Ctx^.FileName, frame, ImageSize, buf);
+  SaveSharedFrameCache(Ctx^.PersistentIdentity, frame, ImageSize, buf);
+  QueuePersistentFrame(Ctx^.PersistentIdentity, frame, Ctx^.Width, Ctx^.Height,
+    Ctx^.VideoOutputFormat, ImageSize, GetVideoFrameCacheSizeMb, buf);
 
   if Length(Ctx^.CachedFrame) <> ImageSize then
     SetLength(Ctx^.CachedFrame, ImageSize);
@@ -1105,7 +1151,7 @@ end;
 initialization
   SetLength(SharedFrameCache, SHARED_FRAME_CACHE_SLOTS);
   SharedFrameCacheCounts := TDictionary<string, Integer>.Create;
-  VideoInfoCache := TDictionary<string, TVideoInfo>.Create;
+  VideoInfoCache := TDictionary<string, TVideoInfoCacheEntry>.Create;
   SharedFrameCacheLock := TCriticalSection.Create;
 
 finalization

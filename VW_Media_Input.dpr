@@ -28,6 +28,7 @@ uses
   FFmpegQsvDecode in 'Plugin_Input\FFmpegQsvDecode.pas',
   FFmpegStreamInfo in 'Plugin_Input\FFmpegStreamInfo.pas',
   FFmpegDecoder in 'Plugin_Input\FFmpegDecoder.pas',
+  PersistentFrameCache in 'Plugin_Input\PersistentFrameCache.pas',
   PluginAudioInputReader in 'Plugin_Input\PluginAudioInputReader.pas',
   PluginInputSettings in 'Plugin_Input\PluginInputSettings.pas';
 
