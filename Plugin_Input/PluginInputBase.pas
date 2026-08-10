@@ -112,6 +112,7 @@ var
   ReusableDecoderFileName : string;           // 再利用デコーダが開いているファイル名
   ReusableDecoderInfo     : TVideoInfo;       // 再利用デコーダの動画情報
   ReusableDecoderLastFrame : Integer;          // 再利用デコーダの最後に読んだフレーム
+  OpenInputContextCount   : Integer;           // 正常openしてclose前の入力handle数
 {$IFDEF DEBUG}
   DecodeTraceLogCleared   : Boolean;          // Debugログをプロセス中に一度だけ初期化したか
 {$ENDIF}
@@ -808,6 +809,7 @@ begin
 {$ENDIF}
 
       Result := Ctx;
+      InterlockedIncrement(OpenInputContextCount);
       Ctx := nil;
     end
   except
@@ -854,6 +856,8 @@ begin
 {$ENDIF}
 
   FreeFileContext(PFileContext(ih));
+  if InterlockedDecrement(OpenInputContextCount) = 0 then
+    StopPersistentFrameCacheWriter;
   Result := True;
 end;
 

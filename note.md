@@ -1171,6 +1171,7 @@ read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=413.718 frame_bu
 - `Plugin_Input\PersistentFrameCache.pas` を追加した。
   - 保存先は `%LOCALAPPDATA%\VW_Media_Input\FrameCache`。
   - 保存は最大128フレームの専用キューとバックグラウンドスレッドで行い、安定している初回再生のデコードスレッドをディスク書き込みで止めない。
+  - 待機メモリ削減目的で32フレームを試したが、約1.3秒分しか保持できず、各MP4のframe 0直後に多数のキャッシュ欠損が発生したため128フレームへ戻した。
   - ディスク上限は既存 `VideoFrameCacheMB` の4倍とし、現在の既定1,024MB設定では4GB。最終利用時刻によるLRUで古いファイルを削除する。
 - キャッシュ一致条件:
   - 正規化した絶対パス。
@@ -1185,6 +1186,11 @@ read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=413.718 frame_bu
   - frame 1は通常QSVデコード約475.9ms、別プロセスの永続キャッシュ約10.0ms。
   - frame 1の通常デコード結果とキャッシュ結果はSHA-256が完全一致した。
   - Debugログは `route=persistent_cache` となり、キャッシュhit時はQSV decoderをopenしない。
+- AviUtl2終了時のプロセス残留対策:
+  - 旧LRU整理は1ファイル削除するたびに全キャッシュを再走査しており、4GB到達後の終了を長引かせる可能性があった。
+  - キャッシュ一覧を1回だけ走査して最終利用時刻順へ並べ、古いものをまとめて削除する方式へ変更した。
+  - 最後の入力handleをcloseした時点で終了フラグを立て、LRU整理を途中中断して書き込みスレッドを停止・回収する。
+  - 4GB超のキャッシュを持つ独立プロセスで未キャッシュframeをQSVデコード後、close約31～45msで終了し、プロセスが残留しないことを確認した。
 
 ## 2026-06-17 ProRes 4444 alpha 入力の初期対応
 
