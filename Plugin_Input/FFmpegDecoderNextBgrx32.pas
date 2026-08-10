@@ -335,6 +335,33 @@ begin
       end;
     end;
 
+    // demuxerのEOF後もデコーダ内部に残る遅延フレームを取り出す。
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      DecodeStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+    Ret := TFFmpegApi.avcodec_send_packet(CodecContext, nil);
+    if (Ret >= 0) and (TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0) then
+    begin
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        Inc(DecodedFrameCount);
+        DecodeStopwatch.Stop;
+        DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
+      end;
+{$ENDIF}
+      Result := FinishFrame('drain');
+      Exit;
+    end;
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      DecodeStopwatch.Stop;
+      DecodeElapsedMs := DecodeElapsedMs + DecodeStopwatch.Elapsed.TotalMilliseconds;
+    end;
+{$ENDIF}
+
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
       TotalStopwatch.Stop;

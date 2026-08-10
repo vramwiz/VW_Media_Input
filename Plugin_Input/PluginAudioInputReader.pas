@@ -120,7 +120,7 @@ begin
   end;
 
   FDecoder := TFFmpegDecoder.Create;
-  if not FDecoder.Open(FileName, AudioInfo, ErrorMessage) then
+  if not FDecoder.OpenAudioOnly(FileName, AudioInfo, ErrorMessage) then
   begin
     FLastError := ErrorMessage;
     FreeAndNil(FDecoder);

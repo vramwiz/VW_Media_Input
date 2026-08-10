@@ -29,9 +29,10 @@ uses
   PluginAudioInputReader, PluginInputSettings;
 
 const
-  MAX_FORWARD_DECODE_GAP      = 120;               // 近い前方ジャンプを順方向decodeで追う最大frame数
+  MAX_FORWARD_DECODE_GAP      = 32;                // 小さい前方ジャンプだけ順方向decodeで追う最大frame数
   SHARED_FRAME_CACHE_SLOTS    = 1024;              // 低解像度素材も保持できるキャッシュ管理枠数
   FRAME_CACHE_PER_FILE_LIMIT  = 64;                // 1ファイルが保持できる最大フレーム数
+  VIDEO_INFO_CACHE_LIMIT      = 256;               // QSVを開かず再利用するメタデータ件数
   VIDEO_OUTPUT_BGRX32         = 0;                 // AviUtl2へ32bit BGRxで返す形式
   VIDEO_OUTPUT_BGR24          = 1;                 // AviUtl2へ24bit BGRで返す形式
   VIDEO_OUTPUT_YUY2           = 2;                 // AviUtl2へYUY2で返す形式
@@ -39,7 +40,7 @@ const
   VIDEO_OUTPUT_YC48           = 4;                 // AviUtl2へYC48で返す試験用形式
   VIDEO_OUTPUT_RGBA32         = 5;                 // AviUtl2へ透過保持用32bit RGBA/BGRAで返す形式
   VIDEO_OUTPUT_FORMAT         = VIDEO_OUTPUT_YUY2; // 現在採用するAviUtl2向け映像形式
-  ENABLE_REUSABLE_DECODER     = False;             // 終了時にQSVリソースを残さないため再利用を抑止
+  ENABLE_REUSABLE_DECODER     = False;             // QSV resourceを保持するdecoder再利用は行わない
   BI_YUY2                     = $32595559;         // 'YUY2'
   BI_I420                     = $30323449;         // 'I420'
   BI_YC48                     = $38344359;         // 'YC48'
@@ -96,6 +97,7 @@ var
   SharedFrameCacheClock   : UInt64;                       // 共有キャッシュのLRU順序カウンタ
   SharedFrameCacheBytes   : Int64;                        // 現在保持している映像データの合計byte数
   SharedFrameCacheCounts  : TDictionary<string, Integer>; // 正規化ファイル名ごとの保持フレーム数
+  VideoInfoCache          : TDictionary<string, TVideoInfo>; // QSVを含まないファイル別メタデータ
   SharedFrameCacheLock    : TCriticalSection;             // 共有キャッシュ保護用ロック
   ReusableDecoder         : TFFmpegDecoder;   // close直後に次openへ引き渡すデコーダ
   ReusableDecoderFileName : string;           // 再利用デコーダが開いているファイル名
@@ -115,6 +117,39 @@ end;
 function FrameCacheFileKey(const FileName: string): string;
 begin
   Result := LowerCase(FileName);
+end;
+
+// QSVを開かずに取得したファイル情報を共有キャッシュから読む。
+function TryReadVideoInfoCache(const FileName: string; out Info: TVideoInfo): Boolean;
+begin
+  Result := False;
+  if (SharedFrameCacheLock = nil) or (VideoInfoCache = nil) then
+    Exit;
+  SharedFrameCacheLock.Enter;
+  try
+    Result := VideoInfoCache.TryGetValue(FrameCacheFileKey(FileName), Info);
+  finally
+    SharedFrameCacheLock.Leave;
+  end;
+end;
+
+// 軽量probeで取得したファイル情報を件数制限付きで保存する。
+procedure SaveVideoInfoCache(const FileName: string; const Info: TVideoInfo);
+var
+  FileKey: string;
+begin
+  if (SharedFrameCacheLock = nil) or (VideoInfoCache = nil) then
+    Exit;
+  SharedFrameCacheLock.Enter;
+  try
+    FileKey := FrameCacheFileKey(FileName);
+    if (VideoInfoCache.Count >= VIDEO_INFO_CACHE_LIMIT) and
+       not VideoInfoCache.ContainsKey(FileKey) then
+      VideoInfoCache.Clear;
+    VideoInfoCache.AddOrSetValue(FileKey, Info);
+  finally
+    SharedFrameCacheLock.Leave;
+  end;
 end;
 
 // 設定された共有フレームキャッシュ上限をbyte数で返す。
@@ -575,7 +610,7 @@ var
   ErrorMessage: string;
   AudioErrorMessage: string;
 {$IFDEF DEBUG}
-  ReusedDecoder: Boolean;
+  MetadataCacheHit: Boolean;
   OpenStopwatch: TStopwatch;
   StageStopwatch: TStopwatch;
   DecoderOpenMs: Double;
@@ -585,7 +620,7 @@ begin
   Result := nil;
   AudioErrorMessage := '';
 {$IFDEF DEBUG}
-  ReusedDecoder := False;
+  MetadataCacheHit := False;
   AudioReaderOpenMs := 0;
   if DECODE_TRACE_ENABLED then
     OpenStopwatch := TStopwatch.StartNew;
@@ -606,18 +641,16 @@ begin
     if DECODE_TRACE_ENABLED then
       StageStopwatch := TStopwatch.StartNew;
 {$ENDIF}
-    if ENABLE_REUSABLE_DECODER and
-      TryTakeReusableDecoder(Ctx^.FileName, Ctx^.Decoder, VideoInfo, Ctx^.LastDecodedFrame) then
+    if TryReadVideoInfoCache(Ctx^.FileName, VideoInfo) then
     begin
 {$IFDEF DEBUG}
       if DECODE_TRACE_ENABLED then
-        ReusedDecoder := True;
+        MetadataCacheHit := True;
 {$ENDIF}
     end
     else
     begin
-      Ctx^.Decoder := TFFmpegDecoder.Create;
-      if not Ctx^.Decoder.Open(Ctx^.FileName, VideoInfo, ErrorMessage) then
+      if not TFFmpegDecoder.ProbeVideoInfo(Ctx^.FileName, VideoInfo, ErrorMessage) then
       begin
         Ctx^.LastError := ErrorMessage;
 {$IFDEF DEBUG}
@@ -635,6 +668,7 @@ begin
         FreeFileContext(Ctx);
         Exit;
       end;
+      SaveVideoInfoCache(Ctx^.FileName, VideoInfo);
     end;
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
@@ -644,7 +678,6 @@ begin
     end;
 {$ENDIF}
 
-    if Ctx^.Decoder <> nil then
     begin
       Ctx^.HasVideo := (VideoInfo.Width > 0) and (VideoInfo.Height > 0);
       Ctx^.VideoInfo := VideoInfo;
@@ -658,7 +691,7 @@ begin
       FpsToRateScale(VideoInfo.Fps, Ctx^.Rate, Ctx^.Scale);
 
       if Ctx^.HasVideo and (Ctx^.DurationSec > 0) then
-        Ctx^.FrameCount := Max(1, Ceil(Ctx^.DurationSec * Ctx^.Rate / Ctx^.Scale))
+        Ctx^.FrameCount := Max(1, Round(Ctx^.DurationSec * Ctx^.Rate / Ctx^.Scale))
       else if Ctx^.HasVideo then
         Ctx^.FrameCount := 1;
 
@@ -731,12 +764,13 @@ begin
       if DECODE_TRACE_ENABLED then
       begin
         OpenStopwatch.Stop;
-        DecodeTrace(Format('open ok file="%s" reused=%s last=%d width=%d ' +
+        DecodeTrace(Format('open ok file="%s" reused=False metadata_cache_hit=%s ' +
+          'last=%d width=%d ' +
           'height=%d duration=%.3f fps=%.6f frames=%d pix_fmt="%s" ' +
           'alpha=%s output_format=%d audio=%s audio_err="%s" ' +
           'elapsed_ms=%.3f decoder_open_ms=%.3f audio_reader_open_ms=%.3f ' +
           'frame_cache_mb=%d frame_cache_per_file=%d',
-          [Ctx^.FileName, BoolToStr(ReusedDecoder, True), Ctx^.LastDecodedFrame,
+          [Ctx^.FileName, BoolToStr(MetadataCacheHit, True), Ctx^.LastDecodedFrame,
            Ctx^.Width, Ctx^.Height, Ctx^.DurationSec, VideoInfo.Fps,
            Ctx^.FrameCount, VideoInfo.PixelFormatName, BoolToStr(VideoInfo.HasAlpha, True),
            Ctx^.VideoOutputFormat, BoolToStr(VideoInfo.Audio.Present, True), AudioErrorMessage,
@@ -838,8 +872,10 @@ var
   Decoded: Boolean;
   FrameGap: Integer;
   ForwardFrame: Integer;
+  OpenedVideoInfo: TVideoInfo;
 {$IFDEF DEBUG}
   StartTick: TStopwatch;
+  LazyOpenStopwatch: TStopwatch;
   RequestTick: Int64;
   RequestIntervalMs: Double;
   ReadElapsedMs: Double;
@@ -853,7 +889,7 @@ begin
     Exit;
 
   Ctx := PFileContext(ih);
-  if (Ctx^.Decoder = nil) or (not Ctx^.HasVideo) then
+  if not Ctx^.HasVideo then
     Exit;
 
   if frame < 0 then
@@ -904,6 +940,40 @@ begin
   if DECODE_TRACE_ENABLED then
     StartTick := TStopwatch.StartNew;
 {$ENDIF}
+  if Ctx^.Decoder = nil then
+  begin
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      LazyOpenStopwatch := TStopwatch.StartNew;
+{$ENDIF}
+    Ctx^.Decoder := TFFmpegDecoder.Create;
+    if not Ctx^.Decoder.Open(Ctx^.FileName, OpenedVideoInfo, ErrorMessage) then
+    begin
+      Ctx^.Decoder.Free;
+      Ctx^.Decoder := nil;
+      Ctx^.LastError := ErrorMessage;
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        LazyOpenStopwatch.Stop;
+        DecodeTrace(Format(
+          'lazy_decoder_open file="%s" ok=False elapsed_ms=%.3f err="%s"',
+          [Ctx^.FileName, LazyOpenStopwatch.Elapsed.TotalMilliseconds, ErrorMessage]));
+      end;
+{$ENDIF}
+      Exit;
+    end;
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      LazyOpenStopwatch.Stop;
+      DecodeTrace(Format(
+        'lazy_decoder_open file="%s" ok=True elapsed_ms=%.3f decoder_info_fps=%.6f',
+        [Ctx^.FileName, LazyOpenStopwatch.Elapsed.TotalMilliseconds,
+         OpenedVideoInfo.Fps]));
+    end;
+{$ENDIF}
+  end;
   DecodeRoute := '';
   FrameGap := frame - Ctx^.LastDecodedFrame;
   if (Ctx^.LastDecodedFrame >= 0) and (FrameGap > 0) and (FrameGap <= MAX_FORWARD_DECODE_GAP) then
@@ -1035,11 +1105,13 @@ end;
 initialization
   SetLength(SharedFrameCache, SHARED_FRAME_CACHE_SLOTS);
   SharedFrameCacheCounts := TDictionary<string, Integer>.Create;
+  VideoInfoCache := TDictionary<string, TVideoInfo>.Create;
   SharedFrameCacheLock := TCriticalSection.Create;
 
 finalization
   ReusableDecoder.Free;
   SharedFrameCache := nil;
+  VideoInfoCache.Free;
   SharedFrameCacheCounts.Free;
   SharedFrameCacheLock.Free;
 

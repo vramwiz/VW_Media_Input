@@ -20,7 +20,8 @@ implementation
 
 uses
   System.Diagnostics, System.SysUtils, Winapi.Windows,
-  FFmpegApi, FFmpegDecodeStats, FFmpegFrameConvert, FFmpegStreamInfo;
+  FFmpegApi, FFmpegDecodeStats, FFmpegFrameConvert, FFmpegQsvDecode,
+  FFmpegStreamInfo;
 
 const
 {$IFDEF DEBUG}
@@ -69,6 +70,9 @@ var
   Stream: PAVStream;
   Ret: Integer;
   TargetTs: Int64;
+  MaxPostSeekPacketTs: Int64;
+  QsvTimestampTolerance: Int64;
+  DiscardedQsvFrameCount: Integer;
 {$IFDEF DEBUG}
   Stopwatch: TStopwatch;
   TotalStopwatch: TStopwatch;
@@ -112,6 +116,9 @@ begin
       TotalStopwatch := TStopwatch.StartNew;
 {$ENDIF}
     TargetTs := StreamTimestampFromMs(Stream, PositionMs);
+    MaxPostSeekPacketTs := AV_NOPTS_VALUE;
+    QsvTimestampTolerance := QsvSeekTimestampTolerance(Stream);
+    DiscardedQsvFrameCount := 0;
     Ret := TFFmpegApi.av_seek_frame(FormatContext, Context.StreamIndex, TargetTs, AVSEEK_FLAG_BACKWARD);
     if Ret < 0 then
     begin
@@ -140,6 +147,8 @@ begin
         if Packet.stream_index <> Context.StreamIndex then
           Continue;
 
+        UpdateQsvSeekPacketTimestamp(Packet, MaxPostSeekPacketTs);
+
 {$IFDEF DEBUG}
         if DECODE_TRACE_ENABLED then
           Stopwatch := TStopwatch.StartNew;
@@ -154,6 +163,20 @@ begin
           if DECODE_TRACE_ENABLED then
             Inc(DecodedFrameCount);
 {$ENDIF}
+          if IsStaleQsvSeekFrame(Context.VideoUsesQsv, Frame.pts,
+            MaxPostSeekPacketTs, QsvTimestampTolerance) then
+          begin
+            Inc(DiscardedQsvFrameCount);
+{$IFDEF DEBUG}
+            if DECODE_TRACE_ENABLED then
+              DecodeTrace(Format(
+                'qsv_seek_stale_discard file="%s" frame_pts=%d target_ts=%d ' +
+                'max_packet_ts=%d tolerance_ts=%d discarded=%d',
+                [Context.FileName, Frame.pts, TargetTs, MaxPostSeekPacketTs,
+                 QsvTimestampTolerance, DiscardedQsvFrameCount]));
+{$ENDIF}
+            Continue;
+          end;
           if (Frame.pts = AV_NOPTS_VALUE) or (Frame.pts >= TargetTs) then
           begin
             CopyFrameToYc48Buffer(Frame, Buffer, BufferStride,

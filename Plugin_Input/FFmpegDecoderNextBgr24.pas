@@ -213,6 +213,46 @@ begin
       end;
     end;
 
+    // demuxerのEOF後もデコーダ内部に残る遅延フレームを取り出す。
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+      Stopwatch := TStopwatch.StartNew;
+{$ENDIF}
+    Ret := TFFmpegApi.avcodec_send_packet(CodecContext, nil);
+    if (Ret >= 0) and (TFFmpegApi.avcodec_receive_frame(CodecContext, Frame) = 0) then
+    begin
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        Inc(DecodedFrameCount);
+{$ENDIF}
+      if ConvertFrame then
+        CopyFrameToBgr24Buffer(Frame, Buffer, BufferStride,
+          Context.DirectSwsContext, Context.DirectSwsSrcWidth, Context.DirectSwsSrcHeight,
+          Context.DirectSwsSrcFormat, Context.DirectSwsDstFormat);
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+      begin
+        Stopwatch.Stop;
+        TotalStopwatch.Stop;
+        FFmpegDecodeStats.UpdateVideoLoadStats(Context.DecodeStats,
+          Stopwatch.Elapsed.TotalMilliseconds);
+      end;
+{$ENDIF}
+      PositionMs := StreamTimestampToMs(Stream, Frame.pts);
+{$IFDEF DEBUG}
+      if DECODE_TRACE_ENABLED then
+        DecodeTrace(Format(
+          'next_decode_bgr24 file="%s" convert=%s source=drain ' +
+          'pos_ms=%d frame_pts=%d read_packets=%d video_packets=%d ' +
+          'decoded_frames=%d elapsed_ms=%.3f convert_ms=%.3f',
+          [Context.FileName, BoolToStr(ConvertFrame, True), PositionMs, Frame.pts,
+           ReadPacketCount, VideoPacketCount, DecodedFrameCount,
+           TotalStopwatch.Elapsed.TotalMilliseconds, Stopwatch.Elapsed.TotalMilliseconds]));
+{$ENDIF}
+      Result := True;
+      Exit;
+    end;
+
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
       TotalStopwatch.Stop;

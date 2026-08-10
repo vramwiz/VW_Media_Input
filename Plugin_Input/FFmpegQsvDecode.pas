@@ -18,11 +18,21 @@ const
 function QsvDecoderNameForCodecId(CodecId: Integer): AnsiString;
 // QSV用のHW device contextを作成する。
 function CreateQsvDevice(out DeviceContext: PAVBufferRef; out ErrorMessage: string): Boolean;
+// seek後に送ったpacketの最大timestampを更新する。
+procedure UpdateQsvSeekPacketTimestamp(Packet: PAVPacket; var MaxTimestamp: Int64);
+// QSVのフレーム並べ替えを許容するtimestamp幅を返す。
+function QsvSeekTimestampTolerance(Stream: PAVStream): Int64;
+// seek前の非同期出力が残っているかをpacket timestampとの対応で判定する。
+function IsStaleQsvSeekFrame(VideoUsesQsv: Boolean; FramePts,
+  MaxPacketTimestamp, TimestampTolerance: Int64): Boolean;
 // QSV HW frameの場合だけCPU側フレームへ転送する。
 function TransferFrameToCpuIfNeeded(SourceFrame, TransferFrame: PAVFrame;
   out CpuFrame: PAVFrame; out DidTransfer: Boolean; out ErrorMessage: string): Boolean;
 
 implementation
+
+uses
+  System.Math;
 
 // codec idから対応するQSV decoder名を返す。
 function QsvDecoderNameForCodecId(CodecId: Integer): AnsiString;
@@ -58,6 +68,46 @@ begin
   Result := Ret >= 0;
   if not Result then
     ErrorMessage := TFFmpegApi.ErrorText(Ret);
+end;
+
+procedure UpdateQsvSeekPacketTimestamp(Packet: PAVPacket; var MaxTimestamp: Int64);
+begin
+  if Packet = nil then
+    Exit;
+  if (Packet.pts <> AV_NOPTS_VALUE) and
+     ((MaxTimestamp = AV_NOPTS_VALUE) or (Packet.pts > MaxTimestamp)) then
+    MaxTimestamp := Packet.pts;
+  if (Packet.dts <> AV_NOPTS_VALUE) and
+     ((MaxTimestamp = AV_NOPTS_VALUE) or (Packet.dts > MaxTimestamp)) then
+    MaxTimestamp := Packet.dts;
+end;
+
+function QsvSeekTimestampTolerance(Stream: PAVStream): Int64;
+var
+  Fps: Double;
+  ToleranceMs: Integer;
+begin
+  Result := 1;
+  if Stream = nil then
+    Exit;
+
+  Fps := RationalToDouble(Stream.avg_frame_rate);
+  if Fps > 0 then
+    ToleranceMs := EnsureRange(Ceil(3000.0 / Fps), 40, 250)
+  else
+    ToleranceMs := 125;
+  Result := Abs(StreamTimestampFromMs(Stream, ToleranceMs));
+  if Result <= 0 then
+    Result := 1;
+end;
+
+function IsStaleQsvSeekFrame(VideoUsesQsv: Boolean; FramePts,
+  MaxPacketTimestamp, TimestampTolerance: Int64): Boolean;
+begin
+  Result := VideoUsesQsv and
+    (FramePts <> AV_NOPTS_VALUE) and
+    (MaxPacketTimestamp <> AV_NOPTS_VALUE) and
+    (FramePts > MaxPacketTimestamp + TimestampTolerance);
 end;
 
 // QSV HW frameの場合だけCPU側フレームへ転送する。

@@ -1110,9 +1110,60 @@ read_video_slow ... frame=0 last=-1 gap=1 route=seek elapsed_ms=413.718 frame_bu
 現時点の判断:
 
 - プレビュー安定性を優先する場合は `VideoDecoderMode=software` が有力。
+
+### QSV明示指定の厳格化（2026-08-10）
+
+- 設定画面のQSV項目を `QSVを使う（失敗時もソフトウェアへ切り替えない）` と明記した。
+- `VideoDecoderMode=qsv` は自動選択から独立した経路でQSVを初期化する。
+  - QSV非対応、QSVデコーダ未検出、デバイス作成失敗、デコーダopen失敗のいずれでもsoftwareへフォールバックしない。
+  - 失敗時は `qsv_required_failed ... fallback_allowed=False` をDebugログへ出す。
+- デコーダ確定ログへ `strict_qsv=True/False` を追加した。`decode_mode=qsv` の成功時は必ず `decode_backend=qsv strict_qsv=True qsv=True` になる。
+
+### QSV繰り返し再生時の別フレーム混入対策（2026-08-10）
+
+- QSVで後方シークを繰り返すと、`avcodec_flush_buffers` 後にもシーク前の非同期フレームが返る現象を確認した。
+  - 例: `戦闘_03.mp4` のframe 1へ戻した直後、frame 3で終端付近の約4.96秒、次のframe 4で0秒が返っていた。
+- デコーダを新規作成して交換する方式では別フレーム混入を防止できたが、素材ごとに約0.35～0.44秒、seek全体で約0.69～0.87秒かかり、2回目以降の再生停止を悪化させたため採用しない。
+- seek後に実際にQSVへ送ったpacketの最大PTS/DTSを記録し、それより3フレーム相当以上未来のPTSを持つ出力だけをseek前の残留フレームとして破棄する。
+  - デコーダは維持して `avcodec_flush_buffers` を行うため、QSV初期化の繰り返しを避けられる。
+  - 破棄時は `qsv_seek_stale_discard ...` をDebugログへ出す。
+  - 共有正確フレームキャッシュの動作は変更しない。
+- `戦闘_03.mp4` を `0 -> 116 -> 1 -> 3 -> 4 -> 6` の順で読む独立テストでは、旧終端側のPTS `59904 / 60416 / 60928` を破棄できた。
+  - frame 1への後方seekは約36ms、続く順方向は約8～9ms。
+  - 同じ並びの2巡目は正確フレームキャッシュが効き、約1.4～2.5msだった。
 - QSVは単一素材の順方向デコードでは速いが、複数mp4が並ぶプロジェクトや素材切り替えが多い場面では初動待ちが不利。
 - `auto` のままだとQSVが選ばれ、この環境ではカーソル飛びが再発する可能性がある。
 - 今後対策するなら、QSVの初回seek/openが一定以上遅い環境や素材では自動的にsoftwareへ倒す、またはプレビュー用途ではsoftware推奨にする。
+
+### 遠距離順方向要求とEOF drain対策（2026-08-10）
+
+- キャッシュから外れた遠方フレームを最大120フレーム分順次デコードし、約175～479msかけて終端エラーになる例を確認した。
+- 順方向decodeで追う上限を32フレームへ下げ、それより遠い要求は指定位置への正確seekを使う。
+- demuxerがEOFを返した後にNULL packetを送ってデコーダをdrainし、QSVなどが内部に保持している遅延フレームを `source=drain` として返す。
+- YUY2 / BGR24 / BGRX32 / I420 / YC48の順方向decode経路へ適用した。
+
+### 情報取得だけの連続open向けメタデータキャッシュ（2026-08-10）
+
+- 終盤で同じ `戦闘_01.mp4` が短時間に繰り返しopen/closeされ、映像を1枚も読まないまま毎回約320～361msのQSV初期化が発生していた。
+- 未使用QSV decoder自体を再利用する試験では2回目以降のopenが約2～5msになったが、最後に保持した状態でDLLを解放するとプロセスが残留したため採用しない。
+- codec/QSVを開かずcontainer情報だけを読む `ProbeVideoInfo` と、最大256ファイルのメタデータキャッシュを追加した。
+  - 入力handleのopen時はメタデータだけを返し、共有正確フレームキャッシュにない最初の `read_video` でQSV decoderを遅延openする。
+  - QSV decoderはhandleのclose時に必ず解放し、グローバルには保持しない。
+- `戦闘_05.mp4` の独立試験:
+  - 初回メタデータopen約78ms、2～4回目は約1.5～1.6ms。
+  - 実デコード後の情報openも約1.3ms。
+  - DLL解放は約0.85msで、テストプロセスは残留しなかった。
+- durationとfpsから返すフレーム数は `Ceil` ではなく最寄り整数を使い、5.042秒/24fps素材を122枚と過大申告して終端frame 121がEOFになる問題を補正する。
+
+### 添付画像付きMP3の音声再生修正（2026-08-10）
+
+- MP3のカバー画像が映像ストリームとして検出され、`VideoDecoderMode=qsv` の場合に画像codecへ厳格QSVを要求して音声用入力のopenまで失敗していた。
+- 音声入力用の `TPluginAudioInputReader` は `OpenAudioOnly` を使い、映像ストリームを一切初期化せず音声decoderだけを開く。
+- `AV_DISPOSITION_ATTACHED_PIC` の付いたストリームは通常映像から除外し、カバー画像だけを持つMP3をAviUtl2へ音声専用素材として返す。
+- 生成したDebug DLLを別プロセスから直接呼び出して確認した。
+  - `インスト.mp3` / `合体.mp3` / `合体_2.mp3` はすべて `video=False`、`audio=True`。
+  - 各ファイルで先頭4,800サンプルのPCM読み取りに成功し、closeも成功した。
+  - ログ上は `width=0 height=0 frames=0 audio=True audio_err=""` となり、`qsv_required_failed` は発生しない。
 
 ## 2026-06-17 ProRes 4444 alpha 入力の初期対応
 

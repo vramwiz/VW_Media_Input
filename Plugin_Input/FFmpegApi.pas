@@ -214,9 +214,10 @@ type
   Tswr_free = procedure(s: PPSwrContext); cdecl;
 
 const
-  AVMEDIA_TYPE_VIDEO       = 0;                    // 映像ストリーム種別
-  AVMEDIA_TYPE_AUDIO       = 1;                    // 音声ストリーム種別
-  AV_TIME_BASE             = 1000000;              // FFmpegの標準時間単位
+  AVMEDIA_TYPE_VIDEO          = 0;                    // 映像ストリーム種別
+  AVMEDIA_TYPE_AUDIO          = 1;                    // 音声ストリーム種別
+  AV_DISPOSITION_ATTACHED_PIC = $0400;                // 音声ファイルなどへ埋め込まれた添付画像
+  AV_TIME_BASE                = 1000000;              // FFmpegの標準時間単位
   AVSEEK_FLAG_BACKWARD     = 1;                    // 目的位置以前のkey frameへseekする
   AV_PIX_FMT_YUV420P       = 0;                    // I420へ直接渡せるplanar YUV420形式
   AV_PIX_FMT_YUYV422       = 1;                    // YUY2へ渡すpacked YUV422形式

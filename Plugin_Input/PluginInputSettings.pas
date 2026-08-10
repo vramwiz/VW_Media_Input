@@ -253,7 +253,7 @@ begin
       AddControl(0, 'BUTTON', '自動（QSVを優先し、失敗時はソフトウェア）',
         WS_CHILD or WS_VISIBLE or WS_TABSTOP or BS_AUTORADIOBUTTON,
         22, 44, 330, 24, IDC_MODE_AUTO);
-      AddControl(0, 'BUTTON', 'ハードウェア固定（QSV）',
+      AddControl(0, 'BUTTON', 'QSVを使う（失敗時もソフトウェアへ切り替えない）',
         WS_CHILD or WS_VISIBLE or WS_TABSTOP or BS_AUTORADIOBUTTON,
         22, 74, 330, 24, IDC_MODE_QSV);
       AddControl(0, 'BUTTON', 'ソフトウェア',

@@ -108,6 +108,9 @@ var
   Stream: PAVStream;
   Ret: Integer;
   TargetTs: Int64;
+  MaxPostSeekPacketTs: Int64;
+  QsvTimestampTolerance: Int64;
+  DiscardedQsvFrameCount: Integer;
 {$IFDEF DEBUG}
   Stopwatch: TStopwatch;
   SeekStopwatch: TStopwatch;
@@ -231,6 +234,20 @@ var
         LastFrameFmt := Frame.format;
       end;
 {$ENDIF}
+      if IsStaleQsvSeekFrame(Context.VideoUsesQsv, Frame.pts,
+        MaxPostSeekPacketTs, QsvTimestampTolerance) then
+      begin
+        Inc(DiscardedQsvFrameCount);
+{$IFDEF DEBUG}
+        if DECODE_TRACE_ENABLED then
+          DecodeTrace(Format(
+            'qsv_seek_stale_discard file="%s" frame_pts=%d target_ts=%d ' +
+            'max_packet_ts=%d tolerance_ts=%d discarded=%d',
+            [Context.FileName, Frame.pts, TargetTs, MaxPostSeekPacketTs,
+             QsvTimestampTolerance, DiscardedQsvFrameCount]));
+{$ENDIF}
+        Continue;
+      end;
       if (Frame.pts = AV_NOPTS_VALUE) or (Frame.pts >= TargetTs) then
       begin
         Result := FinishFrame;
@@ -284,6 +301,9 @@ begin
       TotalStopwatch := TStopwatch.StartNew;
 {$ENDIF}
     TargetTs := StreamTimestampFromMs(Stream, PositionMs);
+    MaxPostSeekPacketTs := AV_NOPTS_VALUE;
+    QsvTimestampTolerance := QsvSeekTimestampTolerance(Stream);
+    DiscardedQsvFrameCount := 0;
 {$IFDEF DEBUG}
     if DECODE_TRACE_ENABLED then
       SeekStopwatch := TStopwatch.StartNew;
@@ -336,6 +356,8 @@ begin
 
         if Packet.stream_index <> Context.StreamIndex then
           Continue;
+
+        UpdateQsvSeekPacketTimestamp(Packet, MaxPostSeekPacketTs);
 
 {$IFDEF DEBUG}
         if DECODE_TRACE_ENABLED then

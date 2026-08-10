@@ -52,6 +52,9 @@ type
     procedure UpdateVideoLoadStats(ElapsedMs: Double);
     // 映像処理時間をdecode/transfer/convertへ分けて統計更新する
     procedure UpdateVideoStageStats(TotalMs, DecodeMs, TransferMs, ConvertMs: Double);
+    // 映像を開くかどうかを指定してFFmpeg入力を初期化する
+    function OpenInternal(const FileName: string; out Info: TVideoInfo;
+      out ErrorMessage: string; AudioOnly: Boolean): Boolean;
   public
     // デコーダインスタンスを初期化する
     constructor Create;
@@ -61,6 +64,8 @@ type
     procedure Close;
     // 動画を開いてデコード可能な状態にする
     function Open(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
+    // 映像ストリームを無視して音声だけをデコード可能な状態にする
+    function OpenAudioOnly(const FileName: string; out Info: TVideoInfo; out ErrorMessage: string): Boolean;
     // 指定ミリ秒位置へシークしてフレームをBitmapへ変換する
     function DecodeFrameToBitmap(PositionMs: Integer; Bitmap: TBitmap;
       out ErrorMessage: string): Boolean; overload;
@@ -110,6 +115,9 @@ type
     procedure StopAudioPlayback;
     // 一時デコーダで動画情報だけを読む
     class function ReadVideoInfo(const FileName: string; out Info: TVideoInfo;
+      out ErrorMessage: string): Boolean; static;
+    // codec/QSVを開かずcontainerのメタデータだけを読む
+    class function ProbeVideoInfo(const FileName: string; out Info: TVideoInfo;
       out ErrorMessage: string): Boolean; static;
     // 一時デコーダで指定位置のフレームだけを読む
     class function DecodeFrameToBitmap(const FileName: string; PositionMs: Integer;
@@ -175,6 +183,33 @@ begin
     Writeln(F, Line);
   finally
     CloseFile(F);
+  end;
+end;
+
+// 添付画像を除外して通常再生する映像ストリームを返す
+function FindPlayableVideoStream(FormatContext: PAVFormatContext): Integer;
+var
+  BestIndex   : Integer;   // FFmpegが選んだ最優先の映像ストリーム番号
+  StreamIndex : Integer;   // 代替映像ストリームを探す走査位置
+  Stream      : PAVStream; // 判定対象の映像ストリーム
+begin
+  Result := -1;
+  BestIndex := TFFmpegApi.av_find_best_stream(FormatContext,
+    AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0);
+  if BestIndex >= 0 then
+  begin
+    Stream := StreamAt(FormatContext, BestIndex);
+    if Assigned(Stream) and ((Stream.disposition and AV_DISPOSITION_ATTACHED_PIC) = 0) then
+      Exit(BestIndex);
+  end;
+
+  for StreamIndex := 0 to Integer(FormatContext.nb_streams) - 1 do
+  begin
+    Stream := StreamAt(FormatContext, StreamIndex);
+    if Assigned(Stream) and Assigned(Stream.codecpar) and
+       (Stream.codecpar.codec_type = AVMEDIA_TYPE_VIDEO) and
+       ((Stream.disposition and AV_DISPOSITION_ATTACHED_PIC) = 0) then
+      Exit(StreamIndex);
   end;
 end;
 
@@ -305,6 +340,20 @@ end;
 // 動画を開いてデコード可能な状態にする
 function TFFmpegDecoder.Open(const FileName: string; out Info: TVideoInfo;
   out ErrorMessage: string): Boolean;
+begin
+  Result := OpenInternal(FileName, Info, ErrorMessage, False);
+end;
+
+// 映像ストリームを無視して音声だけをデコード可能な状態にする
+function TFFmpegDecoder.OpenAudioOnly(const FileName: string; out Info: TVideoInfo;
+  out ErrorMessage: string): Boolean;
+begin
+  Result := OpenInternal(FileName, Info, ErrorMessage, True);
+end;
+
+// 映像を開くかどうかを指定してFFmpeg入力を初期化する
+function TFFmpegDecoder.OpenInternal(const FileName: string; out Info: TVideoInfo;
+  out ErrorMessage: string; AudioOnly: Boolean): Boolean;
 var
   FormatContext     : PAVFormatContext;    // avformatで開く入力コンテキスト
   CodecContext      : PAVCodecContext;     // 映像デコードコンテキスト
@@ -429,7 +478,10 @@ begin
       Info.DurationSec := FormatContext.duration / AV_TIME_BASE;
     ReadAudioInfo(FormatContext, Info);
 
-    StreamIndex := TFFmpegApi.av_find_best_stream(FormatContext, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0);
+    if AudioOnly then
+      StreamIndex := -1
+    else
+      StreamIndex := FindPlayableVideoStream(FormatContext);
     HasVideoStream := StreamIndex >= 0;
     Stream := nil;
     if HasVideoStream then
@@ -463,7 +515,46 @@ begin
       OpenedWithQsv := False;
       VideoDecoderName := 'software';
       QsvDecoderName := QsvDecoderNameForCodecId(CodecPar.codec_id);
-      if (DecoderMode <> vdmSoftware) and (QsvDecoderName <> '') then
+
+      // QSV明示指定は自動選択とは別経路にする。ここではsoftwareへ絶対に切り替えない。
+      if DecoderMode = vdmQsv then
+      begin
+        if QsvDecoderName = '' then
+        begin
+          ErrorMessage := 'QSV decoder is not supported for this codec.';
+          DecodeTrace(Format(
+            'qsv_required_failed file="%s" decode_mode=qsv attempted_backend=qsv ' +
+            'fallback_allowed=False reason="%s"', [FileName, ErrorMessage]));
+          Exit;
+        end;
+
+        Codec := TFFmpegApi.avcodec_find_decoder_by_name(PAnsiChar(QsvDecoderName));
+        if not Assigned(Codec) then
+        begin
+          ErrorMessage := 'QSV decoder was not found.';
+          DecodeTrace(Format(
+            'qsv_required_failed file="%s" decode_mode=qsv attempted_backend=qsv ' +
+            'fallback_allowed=False decoder="%s" reason="%s"',
+            [FileName, string(QsvDecoderName), ErrorMessage]));
+          Exit;
+        end;
+
+        if not CreateQsvDevice(QsvDeviceContext, QsvErrorMessage) then
+        begin
+          ErrorMessage := QsvErrorMessage;
+          DecodeTrace(Format(
+            'qsv_required_failed file="%s" decode_mode=qsv attempted_backend=qsv ' +
+            'fallback_allowed=False decoder="%s" reason="%s"',
+            [FileName, string(QsvDecoderName), ErrorMessage]));
+          if Assigned(QsvDeviceContext) then
+            TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
+          Exit;
+        end;
+
+        VideoDecoderName := string(QsvDecoderName);
+        OpenedWithQsv := True;
+      end
+      else if (DecoderMode = vdmAuto) and (QsvDecoderName <> '') then
       begin
         Codec := TFFmpegApi.avcodec_find_decoder_by_name(PAnsiChar(QsvDecoderName));
         if Assigned(Codec) and CreateQsvDevice(QsvDeviceContext, QsvErrorMessage) then
@@ -476,29 +567,14 @@ begin
           if not Assigned(Codec) then
             QsvErrorMessage := 'QSV decoder was not found.';
           DecodeTrace(Format(
-            'qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv ' +
+            'qsv_fallback file="%s" decode_mode=auto attempted_backend=qsv ' +
             'attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False ' +
             'decoder="%s" reason="%s"',
-            [FileName, VideoDecoderModeToText(DecoderMode), string(QsvDecoderName), QsvErrorMessage]));
-          if DecoderMode = vdmQsv then
-          begin
-            ErrorMessage := QsvErrorMessage;
-            if Assigned(QsvDeviceContext) then
-              TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
-            Exit;
-          end;
+            [FileName, string(QsvDecoderName), QsvErrorMessage]));
           Codec := nil;
           if Assigned(QsvDeviceContext) then
             TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
         end;
-      end;
-      if (DecoderMode = vdmQsv) and (not OpenedWithQsv) then
-      begin
-        if QsvDecoderName = '' then
-          ErrorMessage := 'QSV decoder is not supported for this codec.'
-        else
-          ErrorMessage := 'QSV decoder could not be opened.';
-        Exit;
       end;
 
       if not Assigned(Codec) then
@@ -523,19 +599,23 @@ begin
       begin
         if OpenedWithQsv then
         begin
-          DecodeTrace(Format(
-            'qsv_fallback file="%s" decode_mode=%s attempted_backend=qsv ' +
-            'attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False ' +
-            'decoder="%s" reason="%s"',
-            [FileName, VideoDecoderModeToText(DecoderMode), VideoDecoderName, TFFmpegApi.ErrorText(Ret)]));
           if DecoderMode = vdmQsv then
           begin
             ErrorMessage := TFFmpegApi.ErrorText(Ret);
+            DecodeTrace(Format(
+              'qsv_required_failed file="%s" decode_mode=qsv attempted_backend=qsv ' +
+              'fallback_allowed=False decoder="%s" reason="%s"',
+              [FileName, VideoDecoderName, ErrorMessage]));
             TFFmpegApi.avcodec_free_context(@CodecContext);
             if Assigned(QsvDeviceContext) then
               TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
             Exit;
           end;
+          DecodeTrace(Format(
+            'qsv_fallback file="%s" decode_mode=auto attempted_backend=qsv ' +
+            'attempted_gpu="Intel Quick Sync" nvidia_nvdec_supported=False ' +
+            'decoder="%s" reason="%s"',
+            [FileName, VideoDecoderName, TFFmpegApi.ErrorText(Ret)]));
           TFFmpegApi.avcodec_free_context(@CodecContext);
           if Assigned(QsvDeviceContext) then
             TFFmpegApi.av_buffer_unref(@QsvDeviceContext);
@@ -612,11 +692,12 @@ begin
 {$ENDIF}
 
       DecodeTrace(Format(
-        'video_decoder file="%s" decode_mode=%s decode_backend=%s ' +
+        'video_decoder file="%s" decode_mode=%s decode_backend=%s strict_qsv=%s ' +
         'gpu_inferred="%s" nvidia_nvdec_supported=False decoder="%s" ' +
         'qsv=%s codec_id=%d codec_tag=%d profile=%d level=%d bit_rate=%d ' +
         'width=%d height=%d fps=%.6f pix_fmt="%s" alpha=%s',
-        [FileName, VideoDecoderModeToText(DecoderMode), DecodeBackend, GpuInferred,
+        [FileName, VideoDecoderModeToText(DecoderMode), DecodeBackend,
+         BoolToStr(DecoderMode = vdmQsv, True), GpuInferred,
          VideoDecoderName, BoolToStr(OpenedWithQsv, True), CodecPar.codec_id,
          CodecPar.codec_tag, CodecPar.profile, CodecPar.level, CodecPar.bit_rate,
          Info.Width, Info.Height, Info.Fps, Info.PixelFormatName,
@@ -998,17 +1079,98 @@ begin
 end;
 
 // 一時デコーダで動画情報だけを読む
-class function TFFmpegDecoder.ReadVideoInfo(const FileName: string;
+class function TFFmpegDecoder.ProbeVideoInfo(const FileName: string;
   out Info: TVideoInfo; out ErrorMessage: string): Boolean;
 var
-  Decoder: TFFmpegDecoder; // 情報取得だけに使う一時デコーダ
+  FormatContext: PAVFormatContext;
+  Stream: PAVStream;
+  CodecPar: PAVCodecParameters;
+  Utf8FileName: UTF8String;
+  StreamIndex: Integer;
+  Ret: Integer;
+{$IFDEF DEBUG}
+  Stopwatch: TStopwatch;
+{$ENDIF}
 begin
-  Decoder := TFFmpegDecoder.Create;
+  FillChar(Info, SizeOf(Info), 0);
+  ErrorMessage := '';
+  Result := False;
+  FormatContext := nil;
+{$IFDEF DEBUG}
+  if DECODE_TRACE_ENABLED then
+    Stopwatch := TStopwatch.StartNew;
+{$ENDIF}
   try
-    Result := Decoder.Open(FileName, Info, ErrorMessage);
+    TFFmpegApi.EnsureLoaded;
+    Utf8FileName := UTF8String(FileName);
+    Ret := TFFmpegApi.avformat_open_input(@FormatContext, PAnsiChar(Utf8FileName), nil, nil);
+    if Ret < 0 then
+    begin
+      ErrorMessage := TFFmpegApi.ErrorText(Ret);
+      Exit;
+    end;
+    Ret := TFFmpegApi.avformat_find_stream_info(FormatContext, nil);
+    if Ret < 0 then
+    begin
+      ErrorMessage := TFFmpegApi.ErrorText(Ret);
+      Exit;
+    end;
+
+    if FormatContext.duration > 0 then
+      Info.DurationSec := FormatContext.duration / AV_TIME_BASE;
+    ReadAudioInfo(FormatContext, Info);
+
+    StreamIndex := FindPlayableVideoStream(FormatContext);
+    if StreamIndex >= 0 then
+    begin
+      Stream := StreamAt(FormatContext, StreamIndex);
+      if not Assigned(Stream) or not Assigned(Stream.codecpar) then
+      begin
+        ErrorMessage := 'Video stream metadata is not available.';
+        Exit;
+      end;
+      CodecPar := Stream.codecpar;
+      Info.Width := CodecPar.width;
+      Info.Height := CodecPar.height;
+      Info.PixelFormat := CodecPar.format;
+      Info.PixelFormatName := PixelFormatName(CodecPar.format);
+      Info.HasAlpha := PixelFormatHasAlpha(Info.PixelFormatName);
+      Info.FpsText := RationalToText(Stream.avg_frame_rate);
+      Info.Fps := RationalToDouble(Stream.avg_frame_rate);
+      if (Info.Width <= 0) or (Info.Height <= 0) then
+      begin
+        ErrorMessage := 'Video stream was found, but size could not be read.';
+        Exit;
+      end;
+    end
+    else if not Info.Audio.Present then
+    begin
+      ErrorMessage := 'No supported video or audio stream was found.';
+      Exit;
+    end;
+    Result := True;
   finally
-    Decoder.Free;
+    if Assigned(FormatContext) then
+      TFFmpegApi.avformat_close_input(@FormatContext);
+{$IFDEF DEBUG}
+    if DECODE_TRACE_ENABLED then
+    begin
+      Stopwatch.Stop;
+      DecodeTrace(Format(
+        'metadata_probe file="%s" ok=%s elapsed_ms=%.3f width=%d height=%d ' +
+        'fps=%.6f duration_sec=%.3f audio=%s err="%s"',
+        [FileName, BoolToStr(Result, True), Stopwatch.Elapsed.TotalMilliseconds,
+         Info.Width, Info.Height, Info.Fps, Info.DurationSec,
+         BoolToStr(Info.Audio.Present, True), ErrorMessage]));
+    end;
+{$ENDIF}
   end;
+end;
+
+class function TFFmpegDecoder.ReadVideoInfo(const FileName: string;
+  out Info: TVideoInfo; out ErrorMessage: string): Boolean;
+begin
+  Result := ProbeVideoInfo(FileName, Info, ErrorMessage);
 end;
 
 // 一時デコーダで指定位置のフレームだけを読む
